@@ -48,6 +48,14 @@ def test_fallback_detects_budget_and_brand(tmp_path):
     assert intent["brand"] == "LG"
 
 
+def test_fallback_household_size_is_not_a_product_feature(tmp_path):
+    intent = extract_intent_fallback("tôi muốn mua tủ lạnh cho nhà 4 người", [], _db(tmp_path))
+    assert intent["category"] == "Tủ Lạnh"
+    assert intent["budget_max"] is None
+    assert intent["priority_features"] == []
+    assert intent["needs_clarification"] is True
+
+
 def test_has_enough_slots():
     assert has_enough_slots({"category": "Tủ Lạnh", "budget_max": 20000000,
                              "priority_features": [], "needs_clarification": False}) is True

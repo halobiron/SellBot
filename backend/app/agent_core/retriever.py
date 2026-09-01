@@ -25,11 +25,15 @@ def get_catalog_metadata(db_path: Optional[str] = None) -> Dict[str, Any]:
     # Get distinct brands
     cursor.execute("SELECT DISTINCT brand FROM all_products WHERE brand IS NOT NULL AND brand != 'Unknown'")
     brands = [row[0] for row in cursor.fetchall() if row[0]]
+
+    cursor.execute("SELECT COUNT(*) FROM all_products")
+    product_count = cursor.fetchone()[0]
     
     conn.close()
     return {
         "categories": categories,
-        "brands": brands
+        "brands": brands,
+        "product_count": product_count,
     }
 
 def get_schema_summary(db_path: Optional[str] = None) -> str:

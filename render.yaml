@@ -10,11 +10,11 @@ services:
       - key: PYTHON_VERSION
         value: "3.12"
       - key: LLM_BASE_URL
-        value: https://mkp-api.fptcloud.com/v1
+        value: https://agentrouter.org/v1
       - key: LLM_API_KEY
         sync: false
       - key: LLM_MODEL
-        value: DeepSeek-V4-Flash
+        value: deepseek-v4-flash
       - key: DATASET_PATH
         value: ../Dataset.xlsx
       - key: CATALOG_PATH

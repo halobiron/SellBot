@@ -54,6 +54,22 @@ def test_clarify_turn(tmp_path):
     assert "?" in out["reply"]
 
 
+def test_general_household_request_must_ask_budget_even_if_llm_marks_a_feature(tmp_path):
+    # Không tin hoàn toàn cờ needs_clarification của LLM: "4 người" chỉ là
+    # bối cảnh, không đủ để chọn SKU khi chưa có ngân sách.
+    llm = FakeLLM(json_responses=[{
+        "category": "Tủ Lạnh", "budget_max": None, "brand": None,
+        "priority_features": ["gia đình 4 người"], "needs_clarification": False,
+        "is_meta_inquiry": False, "clarification_questions": [],
+    }])
+    out = AgentCoreEngine(llm=llm, db_path=_db(tmp_path)).handle(
+        "household-size", "tôi muốn mua tủ lạnh cho nhà 4 người")
+    assert out["stage"] == "collecting"
+    assert out["recommendation"] is None
+    assert "ngân sách" in out["reply"].lower()
+    assert "mục đích sử dụng" not in out["reply"].lower()
+
+
 def test_detail_followup_uses_memory(tmp_path):
     db = _db(tmp_path)
     eng = AgentCoreEngine(llm=_reco_llm(), db_path=db)

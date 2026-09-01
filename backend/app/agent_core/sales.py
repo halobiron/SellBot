@@ -15,7 +15,7 @@ cho máy lạnh, chỉ nói phí giao được miễn/thu theo mốc giỏ hàng
 
 from typing import Any, Dict, List, Optional
 
-from app.nlu.preprocess import strip_accents
+from app.agent_core.text import strip_accents
 
 # Nhóm hàng lắp đặt / không lắp đặt đúng như liệt kê trong giao-hang-lap-dat.md.
 _INSTALL_CATEGORIES = {"tu lanh", "may lanh", "may giat", "may nuoc nong"}

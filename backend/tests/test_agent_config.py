@@ -5,7 +5,6 @@ from tests.agent_helpers import make_db
 
 def test_settings_defaults():
     s = Settings()
-    assert s.pipeline in ("agent_core", "orchestrator")
     assert s.agent_db_path.endswith("products.db")
 
 

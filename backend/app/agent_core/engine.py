@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional, Protocol
 from app.config import get_settings
 from app.llm.client import get_llm
-from app.agent_core.agent_engine import get_compiled_graph
 
 
 class Engine(Protocol):
@@ -26,6 +25,9 @@ class AgentCoreEngine:
     Runtime deps (llm, db_path, callbacks) truyền qua config['configurable'], không checkpoint."""
 
     def __init__(self, llm: Any = None, db_path: Optional[str] = None):
+        # Delay graph construction until the runtime engine is requested.
+        from app.agent_core.agent_engine import get_compiled_graph
+
         self.llm = llm if llm is not None else get_llm()
         self.db_path = db_path or get_settings().agent_db_path
         self.graph = get_compiled_graph()
@@ -55,23 +57,3 @@ class AgentCoreEngine:
 
     def reset(self, session_id: str) -> None:
         self._epoch[session_id] = self._epoch.get(session_id, 0) + 1
-
-
-class OrchestratorEngine:
-    """Adapter bọc Orchestrator cũ về cùng interface (dùng khi PIPELINE=orchestrator / test cũ)."""
-
-    def __init__(self, store, llm):
-        from app.orchestrator import Orchestrator
-        from app.session import SESSIONS
-        self.orch = Orchestrator(store, llm)
-        self.sessions = SESSIONS
-
-    def handle(self, session_id: str, message: str, on_status=None, on_delta=None) -> Dict[str, Any]:
-        from app.main import _turn_payload
-        state = self.sessions.get(session_id)
-        state, result = self.orch.handle_turn(state, message, on_status=on_status, on_delta=on_delta)
-        self.sessions.set(session_id, state)
-        return _turn_payload(result)
-
-    def reset(self, session_id: str) -> None:
-        self.sessions.reset(session_id)

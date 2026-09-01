@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.nlu.preprocess import strip_accents
+from app.agent_core.text import strip_accents
 
 log = logging.getLogger("agent_core")
 

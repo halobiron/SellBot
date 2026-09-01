@@ -3,7 +3,7 @@ import re
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from app.agent_core.retriever import get_catalog_metadata, get_schema_summary
-from app.nlu.preprocess import strip_accents
+from app.agent_core.text import strip_accents
 
 log = logging.getLogger("agent_core")
 
@@ -340,9 +340,11 @@ def extract_intent_fallback(query: str, history: Optional[List[Dict[str, str]]] 
 
     # Extract priority features dynamically without hardcoded keyword lists
     stop_words = {
-        "tôi", "cần", "mua", "tìm", "cho", "chiếc", "cái", "dòng", "loại", "máy", "tính", "bàn", "là", "và",
+        "tôi", "cần", "mua", "muốn", "tìm", "cho", "chiếc", "cái", "dòng", "loại", "máy", "tính", "bàn", "là", "và",
         "nhu", "cầu", "mục", "đích", "chính", "bao", "nhiêu", "tiền", "triệu", "tr", "k", "nghìn", "ngàn",
-        "của", "tại", "với", "có", "không", "nhưng", "để", "làm", "phục", "vụ", "dùng", "thì", "đang", "quan", "tâm"
+        "của", "tại", "với", "có", "không", "nhưng", "để", "làm", "phục", "vụ", "dùng", "thì", "đang", "quan", "tâm",
+        # Bối cảnh hộ gia đình không phải tính năng sản phẩm để được coi là đủ slot.
+        "nhà", "người", "gia", "đình"
     }
     clean_query = query_lower
     if matched_category:
@@ -377,11 +379,10 @@ def extract_intent_fallback(query: str, history: Optional[List[Dict[str, str]]] 
             f"{addr.capitalize()} đang quan tâm đến dòng sản phẩm nào trong các danh mục hiện có ({', '.join(categories[:5])}...)?",
             f"Mức ngân sách dự kiến của {addr} khoảng bao nhiêu để {self_term} hỗ trợ sàng lọc?"
         ]
-    elif matched_category and not budget_max and not priority_features and len(query.split()) < 7 and not replying_to_clarify:
+    elif matched_category and not budget_max and not priority_features and not replying_to_clarify:
         needs_clarification = True
         clarification_questions = [
-            f"{addr.capitalize()} tìm mua {matched_category} phục vụ cho nhu cầu hoặc mục đích sử dụng chính là gì?",
-            f"Ngân sách tối đa {addr} dự kiến đầu tư cho sản phẩm này là bao nhiêu?"
+            f"{addr.capitalize()} dự tính ngân sách khoảng bao nhiêu để {self_term} lọc mẫu phù hợp ạ?"
         ]
 
     intent = {

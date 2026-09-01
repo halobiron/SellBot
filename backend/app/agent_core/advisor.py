@@ -4,7 +4,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from app.schemas import AdviceResult, FactCard
 from app.agent_core.presenters import build_reco_card
 from app.agent_core.retriever import get_catalog_metadata
-from app.agent_core.sales import closing_hook
 from app.advice.provenance import facts_for_llm, format_vnd
 from app.advice.verify import allowed_numbers, line_is_grounded, verify_advice, is_grounded
 
@@ -46,12 +45,16 @@ def build_cards(rows: List[Dict[str, Any]], priority_features: List[str],
 
 def deterministic_message(intent: Dict[str, Any], status: str, db_path: Optional[str] = None,
                           addr: str = "anh/chị") -> Optional[str]:
-    """Copy tất định cho meta_inquiry / no_products_found; None nếu cần LLM."""
+    """Copy tất định cho các trạng thái không cần LLM; None nếu cần LLM."""
     if status == "meta_inquiry":
         meta = get_catalog_metadata(db_path)
         cats = ", ".join(f"**{c}**" for c in meta["categories"])
         return (f"Chào {addr}, hệ thống hiện có **{len(meta['categories'])} danh mục** chính:\n\n{cats}\n\n"
                 f"{addr.capitalize()} quan tâm danh mục nào, ngân sách và tính năng ra sao ạ?")
+    if status == "no_products_found":
+        category = intent.get("category") or "nhóm sản phẩm này"
+        return (f"Dạ hiện chưa có sản phẩm phù hợp trong dữ liệu cho {category} theo tiêu chí của "
+                f"{addr}. {addr.capitalize()} muốn đổi ngân sách hoặc nới một tiêu chí nào ạ?")
     return None
 
 
@@ -181,16 +184,10 @@ def generate_advisor(query: str, intent: Dict[str, Any], rows: List[Dict[str, An
             from app.advice.verify import extract_numbers
             extra_allowed_nums.update(extract_numbers(format_vnd(int(price_diff))))
 
+    # Đừng tự chèn phí giao/lắp và CTA đặt hàng vào lời đề xuất. Khách chưa chọn
+    # máy và chưa hỏi chính sách; phần này chỉ được trả lời ở nhánh policy hoặc
+    # sau khi khách xác nhận mua.
     closing_line = None
-    if is_single_recommend:
-        from app.advice.verify import extract_numbers
-        primary = rows[0] if rows else None
-        closing_line = closing_hook(
-            primary.get("category") if primary else None,
-            float((primary or {}).get("price_clean") or 0),
-            addr=addr, self_term=self_term,
-        )
-        extra_allowed_nums.update(extract_numbers(closing_line))
 
     # Streaming: phát từng dòng đã verify (line-level fail-closed).
     system = _system_prompt(addr, self_term)
@@ -230,7 +227,7 @@ def generate_advisor(query: str, intent: Dict[str, Any], rows: List[Dict[str, An
         )
         if not is_grounded(result):
             log.warning("advisor(stream): LLM vi phạm lỗi số liệu, cảnh báo (warnings=%s)", list(result.warnings))
-            return result.message, True, list(result.warnings)
+            return _safe_summary(cards, self_term), False, list(result.warnings)
         log.info("advisor(stream): câu trả lời LLM grounded, phát đủ")
         return result.message, True, []
 
@@ -260,7 +257,10 @@ def _blocking(llm, system: str, user: str, cards: List[FactCard], self_term: str
     )
     if not is_grounded(result):
         log.warning("advisor: LLM vi phạm lỗi số liệu, cảnh báo (warnings=%s)", list(result.warnings))
-        return result.message, False, list(result.warnings)
+        summary = _safe_summary(cards, self_term)
+        if closing_line:
+            summary = summary + "\n\n" + closing_line
+        return summary, False, list(result.warnings)
     log.info("advisor: câu trả lời LLM grounded")
     return result.message, False, []
 

@@ -104,7 +104,7 @@ Người dùng cuối
 **Interface:** gọi `Orchestrator` (API), tiêu thụ response JSON (frontend).
 
 **Việc làm ngay:**
-- **Chạy `eval/run_eval.py` với LLM thật** → lấy số KPI (category_acc, hallucination_rate) cho bài nộp.
+- **Chạy bộ test guardrail với LLM thật** → kiểm tra số liệu và hành vi fallback trước khi nộp.
 - **Deploy live URL** (backend + build frontend) cho demo; hoàn tất polish UI.
 
 **Đã xong (18/07/2026):**

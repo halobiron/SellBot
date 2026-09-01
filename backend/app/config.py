@@ -11,16 +11,14 @@ _DEFAULT_AGENT_DB = os.path.join(_APP_DIR, "agent_core", "products.db")
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    llm_base_url: str = "http://localhost/v1"
+    # AgentRouter exposes the OpenAI Chat Completions wire protocol at /v1.
+    llm_base_url: str = "https://agentrouter.org/v1"
     llm_api_key: str = ""
-    llm_model: str = "DeepSeek-V4-Flash"
+    llm_model: str = "deepseek-v4-flash"
     dataset_path: str = "../Dataset.xlsx"
     catalog_path: str = "./data/catalog.normalized.json"
-    enable_embeddings: bool = False
     # Danh sách origin được phép gọi API (CORS), phân tách bằng dấu phẩy.
     frontend_origins: str = "http://localhost:5173"
-    # Luồng phục vụ: "agent_core" (LangGraph + SQLite) hoặc "orchestrator" (bản cũ).
-    pipeline: str = "agent_core"
     # DB SQLite của agent_core; đường dẫn tuyệt đối mặc định, override bằng AGENT_DB_PATH.
     agent_db_path: str = _DEFAULT_AGENT_DB
     # Nguồn Excel để rebuild DB (chỉ dùng khi chạy data_ingestion).

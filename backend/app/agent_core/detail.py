@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Tuple
 from app.schemas import AdviceResult, FactCard
-from app.nlu.preprocess import strip_accents
+from app.agent_core.text import strip_accents
 from app.agent_core.presenters import product_display_name, build_detail_card
 from app.agent_core.sales import closing_hook
 from app.advice.provenance import facts_for_llm

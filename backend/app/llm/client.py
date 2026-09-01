@@ -22,10 +22,9 @@ class DeepSeekClient:
         self.max_tokens = max_tokens
 
     def _post(self, messages: list[dict]) -> str:
-        # NOTE: this endpoint (FPT Cloud, DeepSeek-V4-Flash reasoning model) returns
-        # content=None when response_format={"type":"json_object"} is sent, so we do NOT
-        # use it — the prompt requests JSON and _extract_json robustly parses it. Reasoning
-        # models also emit a separate reasoning_content field we intentionally ignore.
+        # The client deliberately avoids response_format={"type":"json_object"}:
+        # prompting plus _extract_json works across OpenAI-compatible gateways.
+        # Reasoning-capable models may emit reasoning_content separately; it is ignored.
         payload = {"model": self.model, "messages": messages,
                    "temperature": 0.2, "max_tokens": self.max_tokens}
         headers = {"Authorization": f"Bearer {self.api_key}"}

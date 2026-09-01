@@ -155,18 +155,17 @@ Các tính năng dưới đây **đã hiện thực hoá và có test bao phủ*
 
 | # | Tính năng | Mô tả ngắn | Vị trí trong code |
 |---|---|---|---|
-| 1 | **Hiểu tiếng Việt tự nhiên** | Không dấu, viết tắt ("20tr", "18m2"), quy đổi ngân sách/đơn vị; NLU qua LLM + **fallback tất định** khi mất API | `app/nlu/`, `app/agent_core/intent.py` |
+| 1 | **Hiểu tiếng Việt tự nhiên** | Nhận diện không dấu, viết tắt và ngân sách; LLM có fallback tất định khi mất API | `app/agent_core/intent.py` |
 | 2 | **Định tuyến ý định thông minh** | Phân biệt: tìm mua · xã giao · hỏi "shop bán gì" · hỏi mặt hàng không có · hỏi chi tiết sản phẩm | `agent_core/agent_engine.py` (`router_edge`) |
 | 3 | **Hỏi ngược có kỷ luật** | Tối đa **3 câu**, mỗi lần 1 câu, câu quan trọng trước, **không hỏi lại điều đã biết** | `agent_core/agent_engine.py` (`clarify_node`) |
 | 4 | **Tôn trọng khi khách từ chối** | "gợi ý đại đi" → vẫn tư vấn được (3 tầm giá đại diện), nêu rõ **giả định** đã dùng | `retriever.price_spread_products` |
-| 5 | **RAG có cấu trúc** | Hard-filter ngân sách + **deterministic preference scoring** (diễn giải được) + semantic re-rank (tuỳ chọn) | `app/retrieval/`, `agent_core/retriever.py` |
+| 5 | **RAG có cấu trúc** | Truy vấn SQLite theo ngành hàng, ngân sách và thông số; kết quả được chuẩn hoá trước khi tư vấn | `app/agent_core/retriever.py` |
 | 6 | **Top-3 + trade-off + why-not** | 3 sản phẩm đa dạng brand/giá, phân tích đánh đổi, **chỉ rõ nhóm không nên chọn** | `agent_core/advisor.py` |
 | 7 | **Bảng so sánh trực quan** | Đặt cạnh nhau các tiêu chí khách quan tâm | `agent_core/compare.py`, `frontend/.../ComparisonTable.jsx` |
 | 8 | **"Vì sao em đề xuất máy này?"** | Panel nguồn: mỗi con số ghi rõ *(giá từ catalog / thông số nhà sản xuất)* + liệt kê cả thứ **chưa có dữ liệu** | `app/advice/provenance.py`, `SourcePanel.jsx` |
 | 9 | **Nói thẳng khi thiếu dữ liệu** | Tồn kho / review / trả góp không có trong data → **luôn** trả lời "chưa có dữ liệu" | guardrail (mục 5) |
 | 10 | **Streaming câu trả lời (SSE)** | `status` theo tiến trình + phát **từng dòng đã kiểm chứng grounding** ngay khi LLM viết xong | `app/main.py` `/api/chat/stream`, `advisor.py` |
-| 11 | **Tư vấn nâng/hạ ngân sách** | "rẻ hơn/cao cấp hơn" → đổi khoảng giá quanh anchor, câu trả lời **tất định** (không qua LLM) | `app/advice/budget.py` |
-| 12 | **Hội thoại nhiều lượt, PII-safe** | Nhớ ngữ cảnh qua `MemorySaver`; **không log nội dung khách** | `agent_core/engine.py`, `app/session.py` |
+| 11 | **Hội thoại nhiều lượt, PII-safe** | Nhớ ngữ cảnh qua `MemorySaver`; **không log nội dung khách** | `app/agent_core/engine.py` |
 
 *Suy luận sơ bộ chân dung khách (demographics/assumptions) đã có ở tầng intent — bot chỉ suy đoán khi khách nói rõ và **luôn tuyên bố giả định**. Persona-driven questioning đầy đủ nằm ở [lộ trình](#10-cơ-hội--lộ-trình-tương-lai).*
 
@@ -185,7 +184,7 @@ Các tính năng dưới đây **đã hiện thực hoá và có test bao phủ*
 Vì lớp (c) không phụ thuộc việc LLM có tuân thủ prompt hay không, hệ thống đạt thuộc tính:
 > **Mọi số liệu tới người dùng đều truy được về một dòng trong catalog đã chuẩn hoá — hoặc câu trả lời nói "chưa có dữ liệu".**
 
-Điều này được đo bằng `eval/run_eval.py` (`hallucination_rate` = 0.0 trên tập kịch bản chuẩn) và `tests/test_eval.py` chứng minh bằng phản chứng: nhét một câu cố tình bịa số → verifier bắt được → `hallucination_rate = 1.0`. Với **streaming**, mỗi dòng được kiểm chứng grounding **trước khi phát** ra màn hình.
+Các tình huống bịa số được kiểm tra bằng unit test; với **streaming**, mỗi dòng được kiểm chứng grounding **trước khi phát** ra màn hình.
 
 > ⚠️ *Giới hạn nêu trung thực:* verifier bắt sai lệch **định lượng** (số). Nhận định **định tính** sai (LLM diễn giải sai ý nghĩa một spec bằng chữ) chưa bị chặn — đây là rủi ro còn lại, nằm trong [lộ trình](#10-cơ-hội--lộ-trình-tương-lai). Chi tiết đầy đủ: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
@@ -211,8 +210,6 @@ Hệ thống tư vấn dựa trên **đúng bộ dữ liệu sản phẩm mà đ
 - **Khoảng 75% sản phẩm không có thông tin giá.** Với những sản phẩm này, bot ghi nhận rõ *"chưa có dữ liệu giá"* và **không đưa vào danh sách xếp hạng theo ngân sách** — tuyệt đối không tự chế ra một mức giá "nghe hợp lý".
 - **Dữ liệu gốc không có thông tin tồn kho, đánh giá của người mua, hay chính sách trả góp.** Vì vậy khi khách hỏi những nội dung này, bot **luôn trả lời thẳng "chưa có dữ liệu"** thay vì đoán.
 - **Dữ liệu gốc khá lộn xộn:** thông số và đơn vị bị viết dính vào nhau trong ô chữ ("313 lít", "1720W - 2050W"), nhiều ô bỏ trống không theo quy luật, thậm chí không có cột tên sản phẩm riêng (hệ thống phải tự ghép tên từ thương hiệu + thông số nổi bật). Toàn bộ những rắc rối này được xử lý ngay ở bước nạp và chuẩn hóa dữ liệu, để các bước tư vấn phía sau luôn làm việc trên dữ liệu sạch.
-
-> Ngoài luồng phục vụ chính, dự án còn giữ lại **một luồng cũ làm phương án dự phòng và đối chiếu** (bật qua cấu hình `PIPELINE=orchestrator`), chạy trên bộ dữ liệu nhỏ hơn phủ 6 ngành hàng. Đây không phải đường phục vụ mặc định.
 
 ---
 
@@ -249,7 +246,7 @@ python -m venv .venv
 #   ./.venv/Scripts/python -m app.agent_core.data_ingestion   # đọc Spec_cate_gia.cleaned.xlsx
 
 cp .env.example .env
-# rồi sửa .env: LLM_BASE_URL, LLM_API_KEY, LLM_MODEL (mặc định DeepSeek-V4-Flash)
+# điền token AgentRouter vào LLM_API_KEY (mặc định: deepseek-v4-flash)
 
 ./.venv/Scripts/uvicorn app.main:app --port 8000
 ```
@@ -258,10 +255,8 @@ Biến môi trường chính (`backend/.env`, mẫu ở `.env.example`):
 
 | Biến | Ý nghĩa | Mặc định |
 |---|---|---|
-| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | Endpoint tương thích OpenAI + key + tên model | — / — / `DeepSeek-V4-Flash` |
-| `PIPELINE` | Luồng phục vụ: `agent_core` (mặc định) hoặc `orchestrator` (fallback) | `agent_core` |
+| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | Endpoint tương thích OpenAI + token + tên model | `https://agentrouter.org/v1` / — / `deepseek-v4-flash` |
 | `AGENT_DB_PATH` | Đường dẫn `products.db` của agent_core | `backend/app/agent_core/products.db` |
-| `ENABLE_EMBEDDINGS` | Bật semantic re-rank (cần `sentence-transformers`) | `false` |
 
 ### Frontend
 
@@ -275,8 +270,7 @@ npm run dev          # mở http://localhost:5173 (backend phải chạy ở :80
 
 ```bash
 cd backend
-./.venv/Scripts/pytest -q            # bộ test unit + integration (agent graph, guardrail, NLU, retrieval, API...)
-./.venv/Scripts/python eval/run_eval.py   # category_acc, budget_acc, pref_recall, hallucination_rate
+./.venv/Scripts/pytest -q            # bộ test unit + integration cho agent graph, guardrail và API
 ```
 
 ---
@@ -291,12 +285,8 @@ backend/
                     #                       | retrieve → advisor → compare → verify}
                     #   (agent_engine, intent, retriever, advisor, compare, detail,
                     #    presenters, data_ingestion, products.db)
-    nlu/            # preprocess (không dấu/viết tắt/ngân sách) + parser (LLM → NeedProfile)
-    dialogue/       # chính sách hỏi ngược (clarify)
-    retrieval/      # hard-filter + deterministic scoring + why-not + semantic re-rank
-    advice/         # provenance (fact-card) + generate + verify (guardrail) + budget + streaming
+    advice/         # provenance, crawler và verify (guardrail dùng chung)
     catalog/        # chuẩn hoá dữ liệu → Product (parsers, category_config, normalize, loader)
-    orchestrator.py # luồng cũ (fallback qua PIPELINE=orchestrator)
     main.py         # FastAPI: /api/chat, /api/chat/stream, /api/reset, /api/health
     llm/client.py   # LLMClient (complete_json/complete_text/stream_text) — đổi provider tại đây
   eval/             # scenarios.jsonl + run_eval.py

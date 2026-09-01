@@ -1,8 +1,6 @@
 from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, TypedDict
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from app.agent_core.intent import (extract_intent, has_enough_slots, kw_declines, kw_policy,
                                    is_off_topic_request, is_programming_request)
@@ -127,9 +125,11 @@ def router_edge(state: AgentState) -> str:
     intent = state.get("intent", {})
     query = state.get("query", "")
     count = state.get("clarify_count", 0)
-    # Luật cứng: ngành hàng và NGÂN SÁCH là bắt buộc trước khi đề xuất —
-    # 3. Yêu cầu category, không bắt buộc ngân sách nữa
-    missing_required = not intent.get("category")
+    # Luật cứng: không đề xuất khi chưa biết ngành hàng hoặc ngân sách.  Một
+    # manh mối bối cảnh như "nhà 4 người" giúp đặt câu hỏi tốt hơn, nhưng chưa
+    # phải tiêu chí đủ để chọn SKU.  Chỉ ngoại lệ khi khách chủ động bảo chọn
+    # đại/không muốn cung cấp thêm thông tin (nhánh ``declines`` bên dưới).
+    missing_required = not intent.get("category") or not intent.get("budget_max")
     declines = bool(intent.get("declines_more_info"))
     # Phạm vi catalog phải thắng policy: nếu khách hỏi chính sách cho một mặt hàng
     # không kinh doanh thì không được tra tài liệu rồi trả nhầm chính sách nhóm khác.
@@ -186,6 +186,11 @@ def clarify_node(state: AgentState, config) -> AgentState:
     if not cat and not qs:
         cats = get_catalog_metadata(_cfg(config, "db_path"))["categories"]
         qs = [f"Bên {self_term} đang có: " + ", ".join(cats) + f". {_addr_cap(state)} đang cần nhóm sản phẩm nào ạ?"]
+    if cat and not intent.get("budget_max"):
+        # Ngân sách là thông tin đang thiếu theo luật router. Hỏi đúng điều này
+        # thay vì lặp lại câu hỏi chung chung về "mục đích sử dụng", nhất là khi
+        # khách đã nêu bối cảnh như số người trong nhà.
+        qs = [f"{_addr_cap(state)} dự tính ngân sách khoảng bao nhiêu để {self_term} lọc mẫu phù hợp ạ?"]
     # Luật "chốt sổ": đây là câu hỏi cuối của quota mà ngân sách vẫn trống -> phải phủ ngân sách.
     _money = ("ngân sách", "giá", "bao nhiêu", "tiền", "triệu", "tầm")
     if (cat and not intent.get("budget_max") and count >= _MAX_CLARIFY - 1
@@ -527,6 +532,9 @@ _COMPILED = None
 def get_compiled_graph():
     global _COMPILED
     if _COMPILED is None:
+        from langgraph.checkpoint.memory import MemorySaver
+        from langgraph.graph import END, START, StateGraph
+
         wf = StateGraph(AgentState)
         wf.add_node("intent_node", intent_node)
         wf.add_node("clarify_node", clarify_node)

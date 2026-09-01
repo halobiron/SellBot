@@ -7,11 +7,8 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from app.orchestrator import TurnResult
-from app.catalog.loader import get_store
-from app.llm.client import get_llm
 from app.config import get_settings
-from app.agent_core.engine import AgentCoreEngine, OrchestratorEngine, Engine
+from app.agent_core.engine import AgentCoreEngine, Engine
 
 app = FastAPI(title="Trợ lý AI Điện Máy Xanh")
 _origins = [o.strip() for o in get_settings().frontend_origins.split(",") if o.strip()]
@@ -39,28 +36,11 @@ class ResetIn(BaseModel):
 
 
 def get_engine() -> Engine:
-    """Chọn engine theo cờ PIPELINE. agent_core dùng singleton để giữ MemorySaver + epoch."""
+    """Trả singleton agent graph để giữ MemorySaver và epoch theo phiên."""
     global _AGENT_ENGINE
-    if get_settings().pipeline == "orchestrator":
-        return OrchestratorEngine(get_store(), get_llm())
     if _AGENT_ENGINE is None:
         _AGENT_ENGINE = AgentCoreEngine()
     return _AGENT_ENGINE
-
-
-def _turn_payload(result: TurnResult) -> dict:
-    recommendation = None
-    if result.advice is not None:
-        recommendation = {
-            "cards": [c.model_dump() for c in result.advice.cards],
-            "assumptions": result.advice.assumptions,
-            "warnings": result.advice.warnings,
-            "comparison": (result.advice.comparison.model_dump()
-                           if result.advice.comparison else None),
-        }
-    return {"reply": result.reply, "stage": result.stage,
-            "question": result.question, "need": result.need.model_dump(),
-            "recommendation": recommendation}
 
 
 def _sse(payload: dict) -> str:
@@ -70,7 +50,8 @@ def _sse(payload: dict) -> str:
 @app.get("/api/health")
 def health():
     try:
-        n = len(get_store().all())
+        from app.agent_core.retriever import get_catalog_metadata
+        n = get_catalog_metadata().get("product_count", 0)
     except Exception:
         n = 0
     return {"status": "ok", "products": n}
