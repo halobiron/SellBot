@@ -6,8 +6,7 @@ from app.agent_core.retriever import get_catalog_metadata, get_schema_summary
 log = logging.getLogger("agent_core")
 
 
-def normalize_intent_scope(intent: Dict[str, Any], query: str,
-                           categories: List[str]) -> Dict[str, Any]:
+def normalize_intent_scope(intent: Dict[str, Any], categories: List[str]) -> Dict[str, Any]:
     """Ép category/unsupported về đúng catalog trước khi router ra quyết định."""
     out = dict(intent)
     by_lower = {cat.lower(): cat for cat in categories}
@@ -204,26 +203,7 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
             k: raw[k] for k in IntentSchema.model_fields if k in raw
         }).model_dump()
         categories = get_catalog_metadata(db_path)["categories"]
-        return normalize_intent_scope(intent, query, categories)
+        return normalize_intent_scope(intent, categories)
     except Exception as e:
         log.exception("intent: không thể trích intent")
         raise IntentServiceUnavailableError("Intent extraction failed") from e
-
-
-def has_enough_slots(intent: Dict[str, Any]) -> bool:
-    """Thông tin tối thiểu để tiến hành tìm kiếm mà không cần hỏi thêm."""
-    # Đây là quyết định ngữ cảnh của LLM. Một priority_features đơn lẻ không được
-    # phép vô hiệu hoá yêu cầu làm rõ mà LLM vừa trả về.
-    if intent.get("needs_clarification"):
-        return False
-    cat = intent.get("category")
-    budget = intent.get("budget_max")
-    brand = intent.get("brand")
-    feats = intent.get("priority_features", [])
-    if not cat and not budget and not brand and not feats:
-        return False
-    if cat and (budget or brand or (feats and len(feats) > 0)):
-        return True
-    if intent.get("needs_clarification") and not (budget or (feats and len(feats) > 0)):
-        return False
-    return True

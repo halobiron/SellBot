@@ -1,7 +1,7 @@
 from app.llm.client import FakeLLM
 import pytest
 
-from app.agent_core.intent import IntentServiceUnavailableError, extract_intent, has_enough_slots
+from app.agent_core.intent import IntentServiceUnavailableError, extract_intent
 from tests.agent_helpers import make_db
 
 
@@ -40,16 +40,6 @@ def test_llm_error_is_reported_to_the_caller(tmp_path):
     db = _db(tmp_path)
     with pytest.raises(IntentServiceUnavailableError):
         extract_intent("mua tủ lạnh 15 triệu", [], BoomLLM(), db)
-
-
-def test_has_enough_slots():
-    assert has_enough_slots({"category": "Tủ Lạnh", "budget_max": 20000000,
-                             "priority_features": [], "needs_clarification": False}) is True
-    assert has_enough_slots({"category": None, "budget_max": None, "brand": None,
-                             "priority_features": [], "needs_clarification": True}) is False
-    assert has_enough_slots({"category": "Tủ Lạnh", "budget_max": None, "brand": None,
-                             "priority_features": ["gia đình 4 người"],
-                             "needs_clarification": True}) is False
 
 
 def test_code_request_is_off_topic_not_unsupported_product(tmp_path):

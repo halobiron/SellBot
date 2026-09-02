@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, TypedDict
 
-from app.agent_core.intent import IntentServiceUnavailableError, extract_intent, has_enough_slots
+from app.agent_core.intent import IntentServiceUnavailableError, extract_intent
 from app.agent_core.policy import answer_policy
 from app.agent_core.retriever import (search_products, price_spread_products, get_catalog_metadata,
                                        category_table_for, hydrate_rows)
@@ -164,14 +164,14 @@ def router_edge(state: AgentState) -> str:
         route = "retrieve"
     elif count >= _MAX_CLARIFY:
         route = "retrieve"
-    elif missing_required or (intent.get("needs_clarification") and not has_enough_slots(intent)):
+    elif missing_required or intent.get("needs_clarification"):
         route = "clarify"
     else:
         route = "retrieve"
     log.info("router: -> %s (missing_required=%s, declines=%s, needs_clarification=%s, "
-             "has_enough_slots=%s, clarify_count=%d, last_products=%d, focused_sku=%r)",
+             "clarify_count=%d, last_products=%d, focused_sku=%r)",
              route, missing_required, declines, intent.get("needs_clarification"),
-             has_enough_slots(intent), count, len(state.get("last_products") or []),
+             count, len(state.get("last_products") or []),
              state.get("focused_sku"))
     return route
 
@@ -214,35 +214,12 @@ def clarify_node(state: AgentState, config) -> AgentState:
             "clarify_count": state.get("clarify_count", 0) + 1}
 
 
-_DIGITAL_CATEGORIES = ("Máy tính bảng", "Máy tính để bàn", "Màn hình máy tính")
-
-
 def _chitchat_fallback(addr: str, self_term: str) -> str:
     return (f"Dạ, {self_term} chưa trả lời tốt câu hỏi này ạ. "
             f"Nếu {addr} cần tư vấn sản phẩm, {self_term} hỗ trợ ngay.")
 
-
-def _digital_suggestions(categories: List[str], limit: int) -> List[str]:
-    return [cat for cat in _DIGITAL_CATEGORIES if cat in categories][:limit]
-
-
-def _has_shopping_pivot(reply: str, categories: List[str]) -> bool:
-    flat = reply.lower()
-    signals = ("tư vấn", "mua sắm", "sản phẩm", "thiết bị", "đang cần tìm", "quan tâm nhóm")
-    return any(signal in flat for signal in signals) or any(cat.lower() in flat for cat in categories)
-
-
-def _knowledge_pivot(categories: List[str], addr: str, self_term: str) -> str:
-    suggestions = _digital_suggestions(categories, 2)
-    if not suggestions:
-        return f"{addr.capitalize()} đang cần tìm sản phẩm nào để {self_term} tư vấn thêm ạ?"
-    labels = " hoặc ".join(f"**{cat}**" for cat in suggestions)
-    return (f"Nếu {addr} cần thiết bị phục vụ học tập hoặc làm việc, {self_term} có thể tư vấn {labels} — "
-            f"{addr} muốn xem nhóm nào ạ?")
-
-
 def chitchat_node(state: AgentState, config) -> AgentState:
-    """Xã giao dùng lời AI; ngoài chủ đề trả mẫu ngắn và quay về mua sắm."""
+    """Xã giao dùng lời AI đã được trích cùng intent."""
     intent = state.get("intent", {})
     query = state.get("query", "")
     addr = _addr(state)
@@ -255,10 +232,6 @@ def chitchat_node(state: AgentState, config) -> AgentState:
             log.warning("chitchat: câu đáp AI dính số lạ -> dùng câu mặc định")
             reply = ""
     text = reply or _chitchat_fallback(addr, self_term)
-    if reply:
-        categories = get_catalog_metadata(_cfg(config, "db_path"))["categories"]
-        if not _has_shopping_pivot(reply, categories):
-            text = f"{reply} {_knowledge_pivot(categories, addr, self_term)}"
     log.info("chitchat_node: reply=%r", text[:80])
     history = state.get("history", []) + [{"role": "assistant", "content": text}]
     return {"response": text, "stage": "collecting", "question": None,

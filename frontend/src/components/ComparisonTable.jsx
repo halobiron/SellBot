@@ -37,16 +37,7 @@ function findCardForProduct(p, cards) {
   match = cards.find(c => clean(c.title).includes(target) || target.includes(clean(c.title)))
   if (match) return match
 
-  // Token-based fallback matching
-  const targetTokens = target.split(/\s+/).filter(t => t.length > 1)
-  if (targetTokens.length > 0) {
-    match = cards.find(c => {
-      const cTitleClean = clean(c.title)
-      const matches = targetTokens.filter(tok => cTitleClean.includes(tok))
-      return (matches.length / targetTokens.length) >= 0.7
-    })
-  }
-  return match || null
+  return null
 }
 
 function CellBody({ cell }) {

@@ -137,7 +137,7 @@ def test_general_knowledge_uses_short_reply_from_same_intent_call(tmp_path):
             f"general-knowledge-{index}", query)
         assert expected in out["reply"]
         assert "chưa trả lời tốt" not in out["reply"]
-        assert "muốn xem nhóm nào" in out["reply"]
+        assert out["reply"] == reply
         assert len(llm.calls) == 1
 
 
