@@ -36,6 +36,15 @@ def test_llm_intent_maps_fields(tmp_path):
     assert intent["needs_clarification"] is False
 
 
+def test_intent_prompt_requires_budget_in_absolute_vnd(tmp_path):
+    db = _db(tmp_path)
+    llm = FakeLLM(json_responses=[{"category": "Màn hình máy tính", "budget_max": 5_000_000}])
+
+    extract_intent("mua màn hình giá 5 củ", [], llm, db)
+
+    assert "'5 củ', '5tr', '5 triệu' đều là 5000000" in llm.calls[0][0]
+
+
 def test_llm_error_is_reported_to_the_caller(tmp_path):
     db = _db(tmp_path)
     with pytest.raises(IntentServiceUnavailableError):

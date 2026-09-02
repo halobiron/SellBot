@@ -89,7 +89,8 @@ class IntentSchema(BaseModel):
     )
     budget_max: Optional[float] = Field(
         default=None,
-        description="Ngân sách tối đa tính bằng VNĐ (15 triệu -> 15000000.0). None nếu chưa nhắc."
+        description="Ngân sách tối đa là số tiền VNĐ tuyệt đối, không phải đơn vị triệu: "
+                    "5 củ/5tr/5 triệu -> 5000000; 5,5 triệu -> 5500000. None nếu chưa nhắc."
     )
     brand: Optional[str] = Field(
         default=None,
@@ -153,6 +154,9 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
         system = (
             "Bạn là nhân viên tư vấn điện máy đang lắng nghe khách. "
             f"{schema_info}\n"
+            "- budget_max BẮT BUỘC là số VNĐ tuyệt đối. Quy đổi cách nói thông dụng của khách: "
+            "'5 củ', '5tr', '5 triệu' đều là 5000000; '5,5 triệu' là 5500000. "
+            "Không bao giờ trả về 5 hoặc 5.5 khi khách đang nói ngân sách theo triệu.\n"
             "Ánh xạ danh mục theo ngữ nghĩa (VD: laptop/macbook/pc/desktop -> 'Máy tính để bàn'; "
             "ipad/tablet -> 'Máy tính bảng', ...). Nếu câu hỏi mới đổi loại sản phẩm so với lịch sử, "
             "BẮT BUỘC theo danh mục mới.\n"
