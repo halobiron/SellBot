@@ -5,43 +5,82 @@ import QuickSuggestions from './components/QuickSuggestions'
 
 const SID = (() => {
   let s = sessionStorage.getItem('emx_sid')
-  if (!s) { s = 'demo-' + Math.random().toString(36).slice(2); sessionStorage.setItem('emx_sid', s) }
+  if (!s) {
+    s = 'demo-' + Math.random().toString(36).slice(2)
+    sessionStorage.setItem('emx_sid', s)
+  }
   return s
 })()
 
-const GREETING = { role: 'bot', text: 'Dạ em là trợ lý Điện Máy Xanh. Anh/chị cần tư vấn hay hỗ trợ gì ạ?' }
+const GREETING = {
+  id: 'greeting-1',
+  role: 'bot',
+  text: 'Chào anh/chị! Em là trợ lý AI Điện Máy Xanh. Em có thể giúp anh/chị tư vấn chọn máy, so sánh thông số kỹ thuật hoặc tra cứu giá & khuyến mãi.',
+}
 
 export default function App() {
   const [messages, setMessages] = useState([GREETING])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
-  // Status text shown in the typing indicator while waiting for the stream;
-  // null = not waiting (indicator hidden, e.g. once reply text starts arriving).
   const [status, setStatus] = useState(null)
+  const [theme, setTheme] = useState(() => localStorage.getItem('emx_theme') || 'light')
+  
   const chatRef = useRef(null)
+  const inputRef = useRef(null)
 
   useEffect(() => {
-    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('emx_theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'))
+  }
+
+  const scrollToBottom = () => {
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight
+    }
+  }
+
+  useEffect(() => {
+    scrollToBottom()
   }, [messages, status])
 
-  // Replace the last message in the list (used to grow / finalize the streamed reply).
   function replaceLast(msg) {
     setMessages((m) => [...m.slice(0, -1), msg])
   }
 
   async function send(text) {
     if (!text || busy) return
-    setMessages((m) => [...m, { role: 'user', text }])
-    setInput(''); setBusy(true); setStatus('Em đang xử lý…')
-    let streamed = false // true once the first delta created the bot bubble
+    const userMsg = {
+      id: 'msg-' + Date.now(),
+      role: 'user',
+      text,
+    }
+    setMessages((m) => [...m, userMsg])
+    setInput('')
+    setBusy(true)
+    setStatus('Đang tìm kiếm & xử lý…')
+
+    let streamed = false
+    const botMsgId = 'msg-' + (Date.now() + 1)
+    
     try {
       const res = await sendChatStream(SID, text, {
-        onStatus: setStatus,
+        onStatus: (st) => setStatus(st),
         onDelta: (chunk) => {
           if (!streamed) {
             streamed = true
             setStatus(null)
-            setMessages((m) => [...m, { role: 'bot', text: chunk }])
+            setMessages((m) => [
+              ...m,
+              {
+                id: botMsgId,
+                role: 'bot',
+                text: chunk,
+              },
+            ])
           } else {
             setMessages((m) => {
               const last = m[m.length - 1]
@@ -50,25 +89,53 @@ export default function App() {
           }
         },
       })
-      const finalMsg = { role: 'bot', text: res.reply, recommendation: res.recommendation }
+
+      const finalMsg = {
+        id: botMsgId,
+        role: 'bot',
+        text: res.reply,
+        recommendation: res.recommendation,
+      }
+
       if (streamed) replaceLast(finalMsg)
       else setMessages((m) => [...m, finalMsg])
     } catch (e) {
       if (e.phase === 'connect') {
-        // Stream endpoint unreachable — turn not processed yet, safe to retry once via sync API.
         try {
           const res = await sendChat(SID, text)
-          setMessages((m) => [...m, { role: 'bot', text: res.reply, recommendation: res.recommendation }])
+          setMessages((m) => [
+            ...m,
+            {
+              id: botMsgId,
+              role: 'bot',
+              text: res.reply,
+              recommendation: res.recommendation,
+            },
+          ])
         } catch {
-          setMessages((m) => [...m, { role: 'bot', text: 'Xin lỗi, hệ thống đang bận. Anh/chị thử lại nhé.' }])
+          setMessages((m) => [
+            ...m,
+            {
+              id: botMsgId,
+              role: 'bot',
+              text: 'Xin lỗi, hệ thống đang bận. Anh/chị thử lại giúp em nhé.',
+            },
+          ])
         }
       } else {
-        // Broke mid-stream — turn already processed server-side, do NOT resend.
-        const errMsg = { role: 'bot', text: 'Xin lỗi, kết nối bị gián đoạn. Anh/chị hỏi lại giúp em nhé.' }
+        const errMsg = {
+          id: botMsgId,
+          role: 'bot',
+          text: 'Kết nối bị gián đoạn. Anh/chị gửi lại câu hỏi giúp em nhé.',
+        }
         if (streamed) replaceLast(errMsg)
         else setMessages((m) => [...m, errMsg])
       }
-    } finally { setBusy(false); setStatus(null) }
+    } finally {
+      setBusy(false)
+      setStatus(null)
+      if (inputRef.current) inputRef.current.focus()
+    }
   }
 
   function submit(e) {
@@ -77,67 +144,133 @@ export default function App() {
   }
 
   async function onReset() {
+    if (busy) return
     try {
       await resetChat(SID)
     } catch {
-      /* ignore network error; still reset the UI */
+      /* ignore */
     }
-    setMessages([GREETING])
+    setMessages([
+      {
+        ...GREETING,
+        id: 'greeting-' + Date.now(),
+      },
+    ])
+    if (inputRef.current) inputRef.current.focus()
   }
 
   return (
-    <div className="app">
-      <header>
-        <div className="brand">
-          <div className="avatar" aria-hidden="true">
-            {/* chat-bubble icon (Heroicons) */}
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M12 20.25c4.97 0 9-3.694 9-8.25s-4.03-8.25-9-8.25S3 7.444 3 12c0 2.104.859 4.023 2.273 5.48.432.447.74 1.04.586 1.641a4.483 4.483 0 0 1-.923 1.785A5.969 5.969 0 0 0 6 21c1.282 0 2.47-.402 3.445-1.087.81.22 1.668.337 2.555.337Z" />
-            </svg>
-          </div>
-          <div>
-            <h1>Trợ lý AI Điện Máy Xanh</h1>
-            <div className="tagline"><span className="online-dot" />Luôn sẵn sàng tư vấn cho bạn</div>
-          </div>
-        </div>
-        <button onClick={onReset}>Làm mới</button>
-      </header>
-      <div className="chat" ref={chatRef}>
-        {messages.map((m, i) => (
-          <Message key={i} msg={m} isLast={i === messages.length - 1} onSuggest={send} disabled={busy} />
-        ))}
-        {messages.length === 1 && <QuickSuggestions onPick={send} disabled={busy} />}
-        {busy && status !== null && (
-          <div className="msg bot">
-            <div className="bubble typing" aria-label="Đang trả lời">
-              <span className="status-text">{status}</span>
-              <span className="dots"><span /><span /><span /></span>
+    <div className="app-layout">
+      <div className="app-container">
+        {/* Minimal Clean Header */}
+        <header className="app-header">
+          <div className="brand-group">
+            <div className="brand-avatar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+              </svg>
+            </div>
+            <div>
+              <h1 className="brand-name">Điện Máy Xanh AI</h1>
+              <span className="brand-status"><span className="status-dot" />Sẵn sàng tư vấn</span>
             </div>
           </div>
-        )}
+
+          <div className="header-actions">
+            <button
+              className="icon-btn"
+              onClick={toggleTheme}
+              title={theme === 'light' ? 'Chế độ tối' : 'Chế độ sáng'}
+            >
+              {theme === 'light' ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
+                </svg>
+              )}
+            </button>
+
+            <button
+              className="btn-new-chat"
+              onClick={onReset}
+              disabled={busy}
+              title="Làm mới cuộc trò chuyện"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+              </svg>
+              <span>Làm mới</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Chat Feed */}
+        <main className="chat-viewport" ref={chatRef}>
+          <div className="messages-list">
+            {messages.map((m, i) => (
+              <Message
+                key={m.id || i}
+                msg={m}
+                isLast={i === messages.length - 1}
+                onSuggest={send}
+                disabled={busy}
+              />
+            ))}
+
+            {messages.length === 1 && (
+              <QuickSuggestions onPick={send} disabled={busy} />
+            )}
+
+            {/* Live Typing Status */}
+            {busy && status !== null && (
+              <div className="msg-row bot-row typing-row">
+                <div className="typing-bubble">
+                  <span className="typing-text">{status}</span>
+                  <div className="typing-dots">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </main>
+
+        {/* Minimal Composer */}
+        <footer className="composer-wrapper">
+          <form className="composer-form" onSubmit={submit}>
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Nhập nhu cầu tư vấn (VD: Tủ lạnh 4 người dưới 15 triệu, máy giặt sấy...)"
+              aria-label="Nội dung câu hỏi"
+              autoFocus
+            />
+            <button
+              type="submit"
+              className="send-btn"
+              disabled={busy || input.trim().length === 0}
+              aria-label="Gửi"
+            >
+              {busy ? (
+                <svg className="spinner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path strokeLinecap="round" d="M12 3a9 9 0 1 0 9 9" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.125A59.769 59.769 0 0121.485 12 59.768 59.768 0 013.27 20.875L5.999 12Zm0 0h7.5" />
+                </svg>
+              )}
+            </button>
+          </form>
+        </footer>
       </div>
-      <form className="composer" onSubmit={submit}>
-        {/* Input stays enabled while the bot replies: the user can pre-type the next
-            question (send() guards against double-send) and focus is never kicked out. */}
-        <input value={input} onChange={(e) => setInput(e.target.value)} autoFocus
-               aria-label="Nội dung tư vấn"
-               placeholder="Ví dụ: Nhà mình có 4 người, cần tủ lạnh tiết kiệm điện dưới 20 triệu" />
-        <button disabled={busy} aria-label={busy ? 'Đang trả lời…' : 'Gửi tin nhắn'}>
-          {busy ? (
-            /* spinner: partial circle that rotates while the bot is replying */
-            <svg className="spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path strokeLinecap="round" d="M12 3a9 9 0 1 0 9 9" />
-            </svg>
-          ) : (
-            /* paper-plane icon (Heroicons) */
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5" />
-            </svg>
-          )}
-        </button>
-      </form>
     </div>
   )
 }
+

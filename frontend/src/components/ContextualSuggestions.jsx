@@ -1,6 +1,3 @@
-// Follow-up suggestion chips shown under a bot reply that listed product cards.
-// Derived purely from recommendation.cards (no backend involvement) — each chip
-// sends its message through the normal chat flow, same as QuickSuggestions.
 function shortName(title) {
   return title
     .replace('Vì sao em đề xuất ', '')
@@ -21,17 +18,29 @@ export default function ContextualSuggestions({ cards, onPick, disabled }) {
       message: `So sánh ${names[0]} và ${names[1]} giúp tôi`,
     })
   }
-  chips.push({ label: `Xem chi tiết ${names[0]}`, message: `Cho tôi xem chi tiết ${names[0]}` })
-  chips.push({ label: `${names[0]} có trả góp không?`, message: `${names[0]} có hỗ trợ trả góp không?` })
-  chips.push({ label: `Đặt mua ${names[0]}`, message: `Tôi muốn đặt mua ${names[0]}` })
+  chips.push({
+    label: `Xem chi tiết ${names[0]}`,
+    message: `Cho tôi xem chi tiết thông số và tính năng của ${names[0]}`,
+  })
+  chips.push({
+    label: `${names[0]} có trả góp không?`,
+    message: `${names[0]} có hỗ trợ mua trả góp 0% không?`,
+  })
 
   return (
-    <div className="contextual-suggestions">
-      {chips.map((c) => (
-        <button key={c.label} className="chip chip-sm" disabled={disabled} onClick={() => onPick(c.message)}>
-          <span>{c.label}</span>
+    <div className="contextual-chips">
+      {chips.map((c, idx) => (
+        <button
+          key={idx}
+          className="context-chip-btn"
+          disabled={disabled}
+          onClick={() => onPick(c.message)}
+        >
+          {c.label}
         </button>
       ))}
     </div>
   )
 }
+
+
