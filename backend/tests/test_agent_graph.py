@@ -3,6 +3,11 @@ from app.agent_core.engine import AgentCoreEngine
 from tests.agent_helpers import make_db
 
 
+class BoomLLM:
+    def complete_json(self, system, user, schema_hint=""):
+        raise RuntimeError("llm down")
+
+
 def _db(tmp_path):
     db = str(tmp_path / "g.db")
     make_db(db, [
@@ -54,9 +59,18 @@ def test_clarify_turn(tmp_path):
     assert "?" in out["reply"]
 
 
-def test_general_household_request_must_ask_budget_even_if_llm_marks_a_feature(tmp_path):
-    # Không tin hoàn toàn cờ needs_clarification của LLM: "4 người" chỉ là
-    # bối cảnh, không đủ để chọn SKU khi chưa có ngân sách.
+def test_intent_service_error_returns_a_generic_unavailable_reply(tmp_path):
+    out = AgentCoreEngine(llm=BoomLLM(), db_path=_db(tmp_path)).handle(
+        "intent-unavailable", "mua tủ lạnh dưới 20 triệu")
+    assert out["stage"] == "unavailable"
+    assert out["recommendation"] is None
+    assert "dịch vụ tư vấn đang bận" in out["reply"]
+
+
+def test_general_household_request_can_recommend_without_budget_when_llm_has_context(tmp_path):
+    # Ngân sách không phải gate cứng. Khi intent đã có ngành hàng và LLM đánh giá
+    # bối cảnh đủ để bắt đầu, agent tư vấn trước rồi mới có thể tinh chỉnh giá ở
+    # lượt sau.
     llm = FakeLLM(json_responses=[{
         "category": "Tủ Lạnh", "budget_max": None, "brand": None,
         "priority_features": ["gia đình 4 người"], "needs_clarification": False,
@@ -64,10 +78,9 @@ def test_general_household_request_must_ask_budget_even_if_llm_marks_a_feature(t
     }])
     out = AgentCoreEngine(llm=llm, db_path=_db(tmp_path)).handle(
         "household-size", "tôi muốn mua tủ lạnh cho nhà 4 người")
-    assert out["stage"] == "collecting"
-    assert out["recommendation"] is None
-    assert "ngân sách" in out["reply"].lower()
-    assert "mục đích sử dụng" not in out["reply"].lower()
+    assert out["stage"] == "recommended"
+    assert out["recommendation"] is not None
+    assert len(out["recommendation"]["cards"]) >= 2
 
 
 def test_detail_followup_uses_memory(tmp_path):

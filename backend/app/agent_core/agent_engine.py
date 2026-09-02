@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, TypedDict
 
-from app.agent_core.intent import (extract_intent, has_enough_slots, kw_declines, kw_policy,
+from app.agent_core.intent import (IntentServiceUnavailableError, extract_intent, has_enough_slots, kw_declines, kw_policy,
                                    is_off_topic_request, is_programming_request)
 from app.agent_core.policy import answer_policy
 from app.agent_core.retriever import (search_products, price_spread_products, get_catalog_metadata,
@@ -81,8 +81,14 @@ def intent_node(state: AgentState, config) -> AgentState:
     customer_addr = resolve_address(query, state.get("customer_addr"))
     self_term = resolve_self_term(customer_addr)
     _notify(config, f"{self_term.capitalize()} đang đọc yêu cầu của {customer_addr}…")
-    intent = extract_intent(query, history, _cfg(config, "llm"), _cfg(config, "db_path"),
-                            addr=customer_addr, self_term=self_term)
+    try:
+        intent = extract_intent(query, history, _cfg(config, "llm"), _cfg(config, "db_path"),
+                                addr=customer_addr, self_term=self_term)
+    except IntentServiceUnavailableError:
+        log.warning("intent_node: intent service unavailable")
+        history = history + [{"role": "user", "content": query}]
+        return {"intent": {"service_unavailable": True}, "history": history,
+                "customer_addr": customer_addr}
     # Lưới dự phòng: keyword bắt được từ chối thì tin, kể cả khi LLM bỏ sót.
     if kw_declines(query):
         intent["declines_more_info"] = True
@@ -125,15 +131,18 @@ def router_edge(state: AgentState) -> str:
     intent = state.get("intent", {})
     query = state.get("query", "")
     count = state.get("clarify_count", 0)
-    # Luật cứng: không đề xuất khi chưa biết ngành hàng hoặc ngân sách.  Một
-    # manh mối bối cảnh như "nhà 4 người" giúp đặt câu hỏi tốt hơn, nhưng chưa
-    # phải tiêu chí đủ để chọn SKU.  Chỉ ngoại lệ khi khách chủ động bảo chọn
-    # đại/không muốn cung cấp thêm thông tin (nhánh ``declines`` bên dưới).
-    missing_required = not intent.get("category") or not intent.get("budget_max")
+    # Chỉ ngành hàng là điều kiện cứng. Ngân sách rất hữu ích để lọc, nhưng không
+    # phải điều kiện để bắt đầu tư vấn: khi LLM đã hiểu rõ nhu cầu/ưu tiên, agent
+    # vẫn có thể đưa các lựa chọn đại diện ở nhiều tầm giá. Cờ
+    # ``needs_clarification`` của intent giữ vai trò quyết định có cần hỏi thêm
+    # hay không, thay vì biến mọi lượt thiếu ngân sách thành cùng một kịch bản.
+    missing_required = not intent.get("category")
     declines = bool(intent.get("declines_more_info"))
+    if intent.get("service_unavailable"):
+        route = "unavailable"
     # Phạm vi catalog phải thắng policy: nếu khách hỏi chính sách cho một mặt hàng
     # không kinh doanh thì không được tra tài liệu rồi trả nhầm chính sách nhóm khác.
-    if intent.get("unsupported_product"):
+    elif intent.get("unsupported_product"):
         route = "unsupported"
     # Khách chốt đơn (xác nhận mua) một máy đang bàn -> ghi nhận lịch sử mua hàng
     # ngay, thắng mọi nhánh khác (đây là hành động rõ ràng của khách).
@@ -175,6 +184,15 @@ def router_edge(state: AgentState) -> str:
     return route
 
 
+def unavailable_node(state: AgentState, config) -> AgentState:
+    """Fail closed when the LLM-powered intent service cannot be used."""
+    text = "Dạ, dịch vụ tư vấn đang bận nên chưa thể xử lý yêu cầu của anh/chị. Anh/chị vui lòng thử lại sau ít phút ạ."
+    history = state.get("history", []) + [{"role": "assistant", "content": text}]
+    return {"response": text, "stage": "unavailable", "question": None, "cards": [],
+            "comparison": None, "assumptions": [], "warnings": ["intent_service_unavailable"],
+            "history": history}
+
+
 def clarify_node(state: AgentState, config) -> AgentState:
     intent = state.get("intent", {})
     cat = intent.get("category")
@@ -186,16 +204,6 @@ def clarify_node(state: AgentState, config) -> AgentState:
     if not cat and not qs:
         cats = get_catalog_metadata(_cfg(config, "db_path"))["categories"]
         qs = [f"Bên {self_term} đang có: " + ", ".join(cats) + f". {_addr_cap(state)} đang cần nhóm sản phẩm nào ạ?"]
-    if cat and not intent.get("budget_max"):
-        # Ngân sách là thông tin đang thiếu theo luật router. Hỏi đúng điều này
-        # thay vì lặp lại câu hỏi chung chung về "mục đích sử dụng", nhất là khi
-        # khách đã nêu bối cảnh như số người trong nhà.
-        qs = [f"{_addr_cap(state)} dự tính ngân sách khoảng bao nhiêu để {self_term} lọc mẫu phù hợp ạ?"]
-    # Luật "chốt sổ": đây là câu hỏi cuối của quota mà ngân sách vẫn trống -> phải phủ ngân sách.
-    _money = ("ngân sách", "giá", "bao nhiêu", "tiền", "triệu", "tầm")
-    if (cat and not intent.get("budget_max") and count >= _MAX_CLARIFY - 1
-            and not any(w in q.lower() for q in qs for w in _money)):
-        qs = (qs + [f"{_addr_cap(state)} dự tính ngân sách khoảng bao nhiêu ạ?"])[-2:]
     # Chỉ chào ở lượt trợ lý mở lời đầu tiên của phiên; các lượt sau vào thẳng câu hỏi.
     greeted = any(m.get("role") == "assistant" for m in state.get("history", []))
     transition = intent.get("transition_message")
@@ -537,6 +545,7 @@ def get_compiled_graph():
 
         wf = StateGraph(AgentState)
         wf.add_node("intent_node", intent_node)
+        wf.add_node("unavailable_node", unavailable_node)
         wf.add_node("clarify_node", clarify_node)
         wf.add_node("chitchat_node", chitchat_node)
         wf.add_node("policy_node", policy_node)
@@ -555,9 +564,11 @@ def get_compiled_graph():
                                   "policy": "policy_node",
                                   "chitchat": "chitchat_node", "meta_inquiry": "meta_inquiry_node",
                                   "unsupported": "unsupported_node", "retrieve": "retrieval_node",
+                                  "unavailable": "unavailable_node",
                                   "confirm_purchase": "confirm_purchase_node",
                                   "aftersales": "aftersales_node"})
         wf.add_edge("clarify_node", END)
+        wf.add_edge("unavailable_node", END)
         wf.add_edge("policy_node", END)
         wf.add_edge("chitchat_node", END)
         wf.add_edge("meta_inquiry_node", END)

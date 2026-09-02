@@ -11,8 +11,8 @@ _DEFAULT_AGENT_DB = os.path.join(_APP_DIR, "agent_core", "products.db")
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # AgentRouter exposes the OpenAI Chat Completions wire protocol at /v1.
-    llm_base_url: str = "https://agentrouter.org/v1"
+    # b.ai exposes the OpenAI Chat Completions wire protocol at /v1.
+    llm_base_url: str = "https://api.b.ai/v1"
     llm_api_key: str = ""
     llm_model: str = "deepseek-v4-flash"
     dataset_path: str = "../Dataset.xlsx"

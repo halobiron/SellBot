@@ -253,158 +253,8 @@ class IntentSchema(BaseModel):
     )
 
 
-def extract_intent_fallback(query: str, history: Optional[List[Dict[str, str]]] = None,
-                            db_path: Optional[str] = None, addr: str = "anh/chị",
-                            self_term: str = "em") -> Dict[str, Any]:
-    """
-    Dynamic semantic fallback extractor using database metadata when LLM API is unavailable.
-    Zero hardcoded mapping dictionaries.
-    """
-    meta = get_catalog_metadata(db_path)
-    categories = meta["categories"]
-    brands = meta["brands"]
-    query_lower = query.lower()
-
-    # Dynamic category matching (sort by length descending to match longer specific names first)
-    matched_category = None
-    sorted_categories = sorted(categories, key=lambda x: len(x), reverse=True)
-    for cat in sorted_categories:
-        cat_lower = cat.lower()
-        if cat_lower in query_lower:
-            matched_category = cat
-            break
-
-    if not matched_category:
-        for cat in sorted_categories:
-            cat_lower = cat.lower()
-            if "máy tính để bàn" in cat_lower and any(w in query_lower for w in ["laptop", "pc", "macbook", "desktop"]):
-                matched_category = cat
-                break
-            if "máy tính bảng" in cat_lower and any(w in query_lower for w in ["tablet", "ipad"]):
-                matched_category = cat
-                break
-            if "tủ mát" in cat_lower and any(w in query_lower for w in ["tủ đông", "freezer"]):
-                matched_category = cat
-                break
-
-    # Inherit category from previous user turn only (never from AI assistant)
-    if not matched_category and history:
-        for msg in reversed(history):
-            if msg.get("role") == "user":
-                prev_text = msg.get("content", "").lower()
-                for cat in categories:
-                    if cat.lower() in prev_text or ("laptop" in prev_text and "Máy tính để bàn" in cat):
-                        matched_category = cat
-                        break
-                if matched_category:
-                    break
-
-    # Extract budget dynamically
-    budget_max = None
-    m_trieu = re.search(r'(\d+(?:\.\d+)?)\s*(?:triệu|tr|củ|trd)', query_lower)
-    if m_trieu:
-        try:
-            budget_max = float(m_trieu.group(1)) * 1000000
-        except Exception:
-            pass
-    else:
-        m_nghin = re.search(r'(\d{4,8})\s*(?:k|nghìn|ngàn)', query_lower)
-        if m_nghin:
-            try:
-                budget_max = float(m_nghin.group(1)) * 1000
-            except Exception:
-                pass
-
-    # Extract brand dynamically from database brands
-    matched_brand = None
-    for b in brands:
-        if re.search(r'\b' + re.escape(b.lower()) + r'\b', query_lower):
-            matched_brand = b
-            break
-
-    # Check for meta inquiry dynamically
-    is_meta_inquiry = False
-    if not matched_category and not budget_max and not matched_brand and any(w in query_lower for w in ["bao nhiêu", "danh mục", "loại nào", "những dòng", "sản phẩm nào", "hiện có", "những gì"]):
-        is_meta_inquiry = True
-
-    # Câu hỏi chính sách cửa hàng (chỉ tin keyword khi không kèm nhu cầu sản phẩm cụ thể)
-    is_policy_question = kw_policy(query) and not matched_category
-    if is_policy_question:
-        is_meta_inquiry = False
-
-    # Xã giao/ngoài chủ đề (fallback thô: câu ngắn mở đầu bằng lời chào, không chứa nhu cầu)
-    flat_q = strip_accents(query_lower).strip()
-    is_chitchat = (not matched_category and not budget_max and not matched_brand
-                   and not is_meta_inquiry and not is_policy_question and len(query.split()) <= 6
-                   and any(flat_q.startswith(k) for k in ("hi", "hello", "helo", "alo", "chao", "xin chao", "hey", "shop oi", "em oi")))
-
-    # Extract priority features dynamically without hardcoded keyword lists
-    stop_words = {
-        "tôi", "cần", "mua", "muốn", "tìm", "cho", "chiếc", "cái", "dòng", "loại", "máy", "tính", "bàn", "là", "và",
-        "nhu", "cầu", "mục", "đích", "chính", "bao", "nhiêu", "tiền", "triệu", "tr", "k", "nghìn", "ngàn",
-        "của", "tại", "với", "có", "không", "nhưng", "để", "làm", "phục", "vụ", "dùng", "thì", "đang", "quan", "tâm",
-        # Bối cảnh hộ gia đình không phải tính năng sản phẩm để được coi là đủ slot.
-        "nhà", "người", "gia", "đình"
-    }
-    clean_query = query_lower
-    if matched_category:
-        for word in matched_category.lower().split():
-            clean_query = clean_query.replace(word, " ")
-    if matched_brand:
-        clean_query = clean_query.replace(matched_brand.lower(), " ")
-
-    priority_features = []
-    for token in clean_query.split():
-        clean_token = re.sub(r'[^\w]', '', token)
-        if len(clean_token) > 2 and clean_token not in stop_words and not clean_token.isdigit():
-            priority_features.append(clean_token)
-
-    # Check clarification need
-    needs_clarification = False
-    clarification_questions = []
-
-    replying_to_clarify = False
-    if history and len(history) >= 1:
-        last_msg = history[-1]
-        if last_msg.get("role") == "assistant" and "?" in last_msg.get("content", ""):
-            replying_to_clarify = True
-
-    log.info("intent(fallback): replying_to_clarify=%s (lượt trước là câu hỏi của trợ lý -> "
-             "không hỏi tiếp dù còn thiếu slot)", replying_to_clarify)
-    if is_meta_inquiry or is_policy_question:
-        needs_clarification = False
-    elif not matched_category and len(query.split()) < 6 and not replying_to_clarify and not priority_features:
-        needs_clarification = True
-        clarification_questions = [
-            f"{addr.capitalize()} đang quan tâm đến dòng sản phẩm nào trong các danh mục hiện có ({', '.join(categories[:5])}...)?",
-            f"Mức ngân sách dự kiến của {addr} khoảng bao nhiêu để {self_term} hỗ trợ sàng lọc?"
-        ]
-    elif matched_category and not budget_max and not priority_features and not replying_to_clarify:
-        needs_clarification = True
-        clarification_questions = [
-            f"{addr.capitalize()} dự tính ngân sách khoảng bao nhiêu để {self_term} lọc mẫu phù hợp ạ?"
-        ]
-
-    intent = {
-        "is_meta_inquiry": is_meta_inquiry,
-        "is_policy_question": is_policy_question,
-        "is_chitchat": is_chitchat,
-        "smalltalk_reply": None,
-        "category": matched_category,
-        "transition_message": None,
-        "unsupported_product": None,
-        "related_categories": [],
-        "budget_max": budget_max,
-        "brand": matched_brand,
-        "priority_features": priority_features,
-        "wants_comparison": False,
-        "assumptions": [],
-        "declines_more_info": kw_declines(query),
-        "needs_custom_query": False,
-        "needs_clarification": needs_clarification,
-        "clarification_questions": clarification_questions
-    }
-    return normalize_intent_scope(intent, query, categories)
+class IntentServiceUnavailableError(RuntimeError):
+    """The intent service could not process the request safely."""
 
 
 _SCHEMA_HINT = (
@@ -421,10 +271,10 @@ _SCHEMA_HINT = (
 def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
                    llm=None, db_path: Optional[str] = None, addr: str = "anh/chị",
                    self_term: str = "em") -> Dict[str, Any]:
-    """Trích ý định qua DeepSeek (LLMClient.complete_json). Lỗi/không có llm -> fallback heuristic."""
+    """Trích ý định qua DeepSeek; không suy đoán intent khi dịch vụ lỗi."""
     if llm is None:
-        log.info("intent: không có LLM -> dùng fallback heuristic")
-        return extract_intent_fallback(query, history, db_path, addr=addr, self_term=self_term)
+        log.error("intent: không có LLM được cấu hình")
+        raise IntentServiceUnavailableError("LLM is not configured")
     try:
         schema_info = get_schema_summary(db_path)
         system = (
@@ -483,8 +333,8 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
         categories = get_catalog_metadata(db_path)["categories"]
         return normalize_intent_scope(intent, query, categories)
     except Exception as e:
-        log.warning("intent: LLM lỗi (%s) -> dùng fallback heuristic", e)
-        return extract_intent_fallback(query, history, db_path, addr=addr, self_term=self_term)
+        log.exception("intent: không thể trích intent")
+        raise IntentServiceUnavailableError("Intent extraction failed") from e
 
 
 def has_enough_slots(intent: Dict[str, Any]) -> bool:

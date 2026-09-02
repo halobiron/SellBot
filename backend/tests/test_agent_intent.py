@@ -1,5 +1,7 @@
 from app.llm.client import FakeLLM
-from app.agent_core.intent import extract_intent, extract_intent_fallback, has_enough_slots
+import pytest
+
+from app.agent_core.intent import IntentServiceUnavailableError, extract_intent, has_enough_slots
 from tests.agent_helpers import make_db
 
 
@@ -34,26 +36,10 @@ def test_llm_intent_maps_fields(tmp_path):
     assert intent["needs_clarification"] is False
 
 
-def test_llm_error_falls_back(tmp_path):
+def test_llm_error_is_reported_to_the_caller(tmp_path):
     db = _db(tmp_path)
-    intent = extract_intent("mua tủ lạnh 15 triệu", [], BoomLLM(), db)
-    assert intent["category"] == "Tủ Lạnh"
-    assert intent["budget_max"] == 15_000_000
-
-
-def test_fallback_detects_budget_and_brand(tmp_path):
-    db = _db(tmp_path)
-    intent = extract_intent_fallback("máy giặt LG khoảng 9 triệu", [], db)
-    assert intent["category"] == "Máy giặt"
-    assert intent["brand"] == "LG"
-
-
-def test_fallback_household_size_is_not_a_product_feature(tmp_path):
-    intent = extract_intent_fallback("tôi muốn mua tủ lạnh cho nhà 4 người", [], _db(tmp_path))
-    assert intent["category"] == "Tủ Lạnh"
-    assert intent["budget_max"] is None
-    assert intent["priority_features"] == []
-    assert intent["needs_clarification"] is True
+    with pytest.raises(IntentServiceUnavailableError):
+        extract_intent("mua tủ lạnh 15 triệu", [], BoomLLM(), db)
 
 
 def test_has_enough_slots():

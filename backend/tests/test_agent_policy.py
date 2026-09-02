@@ -1,4 +1,4 @@
-from app.agent_core.intent import extract_intent_fallback, kw_policy
+from app.agent_core.intent import kw_policy
 from app.agent_core.policy import (load_policy_chunks, search_policy, answer_policy,
                                    _numbers_grounded)
 from tests.agent_helpers import make_db
@@ -221,49 +221,3 @@ def test_kw_policy_detects_policy_questions():
     assert kw_policy("shop có hỗ trợ thanh toán COD không")
     assert not kw_policy("mua tủ lạnh 15 triệu")
     assert not kw_policy("hãy code cho tôi file C++")
-
-
-def test_fallback_intent_flags_policy_question(tmp_path):
-    db = _db(tmp_path)
-    intent = extract_intent_fallback("cửa hàng mấy giờ mở cửa?", [], db)
-    assert intent["is_policy_question"] is True
-    assert intent["needs_clarification"] is False
-    assert intent["is_chitchat"] is False
-
-
-def test_fallback_intent_product_question_not_policy(tmp_path):
-    db = _db(tmp_path)
-    intent = extract_intent_fallback("tủ lạnh toshiba trả góp được không", [], db)
-    # Có category cụ thể -> không cướp sang policy dù dính keyword 'trả góp'.
-    assert intent["is_policy_question"] is False
-    assert intent["category"] == "Tủ Lạnh"
-
-
-def test_fallback_intent_detects_known_unsupported_product(tmp_path):
-    db = _db(tmp_path)
-    intent = extract_intent_fallback("ti vi thì sao", [], db)
-    assert intent["unsupported_product"] == "tivi"
-    assert intent["category"] is None
-    assert intent["needs_clarification"] is False
-
-
-def test_fallback_new_unsupported_product_beats_inherited_category(tmp_path):
-    db = _db(tmp_path)
-    history = [{"role": "user", "content": "tư vấn tủ lạnh"},
-               {"role": "assistant", "content": "Dạ anh cần tủ lạnh tầm giá nào ạ?"}]
-    intent = extract_intent_fallback("tivi thì sao", history, db)
-    assert intent["unsupported_product"] == "tivi"
-    assert intent["category"] is None
-
-
-def test_fallback_intent_does_not_treat_contact_number_as_product(tmp_path):
-    db = _db(tmp_path)
-    intent = extract_intent_fallback("số điện thoại của shop là gì", [], db)
-    assert intent["unsupported_product"] is None
-    assert intent["is_policy_question"] is True
-
-
-def test_fallback_phone_contact_without_word_number_is_still_policy(tmp_path):
-    db = _db(tmp_path)
-    intent = extract_intent_fallback("điện thoại của shop là gì", [], db)
-    assert intent["unsupported_product"] is None

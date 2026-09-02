@@ -70,7 +70,7 @@ Trường mang qua các lượt (được MemorySaver checkpoint theo `thread_id
 
 **intent_node** (thay Gemini → DeepSeek)
 - Gọi `DeepSeekClient.complete_json(system, user, schema_hint)` với schema_hint = mô tả `IntentSchema`. Prompt nhồi `get_schema_summary(db_path)` (danh mục từ DB) + các luật ánh xạ danh mục, chống lặp clarification, chuyển chủ đề (giữ nguyên tinh thần prompt cũ).
-- Map dict trả về → `IntentSchema` (pydantic validate; thiếu field thì default). Nếu LLM lỗi → `extract_intent_fallback` (heuristic thuần, giữ nguyên).
+- Map dict trả về → `IntentSchema` (pydantic validate; thiếu field thì default). Nếu LLM lỗi hoặc không được cấu hình, dừng luồng và trả thông báo dịch vụ tư vấn đang bận; không suy đoán intent bằng heuristic.
 - Cập nhật `intent`, append `query` vào `history`.
 
 **router_edge**

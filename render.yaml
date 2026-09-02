@@ -10,7 +10,7 @@ services:
       - key: PYTHON_VERSION
         value: "3.12"
       - key: LLM_BASE_URL
-        value: https://agentrouter.org/v1
+        value: https://api.b.ai/v1
       - key: LLM_API_KEY
         sync: false
       - key: LLM_MODEL
