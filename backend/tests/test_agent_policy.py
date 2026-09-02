@@ -95,11 +95,6 @@ def test_search_policy_no_match_returns_empty():
     assert search_policy("xyzabc") == []
 
 
-def test_search_policy_rejects_product_only_and_stopword_overlap():
-    assert search_policy("ti vi thì sao") == []
-    assert search_policy("điện thoại thì sao") == []
-
-
 # --- Grounding số liệu ----------------------------------------------------
 
 def test_numbers_grounded_accepts_doc_numbers():

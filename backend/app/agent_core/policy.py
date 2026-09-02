@@ -27,15 +27,6 @@ _STOPWORDS = {
     "vi", "voi", "vay",
 }
 
-# Khi không có category hội thoại, query phải chứa ít nhất một tín hiệu nghiệp vụ
-# mới được phép tìm policy. Tên sản phẩm đơn thuần không phải là tín hiệu policy.
-_POLICY_ANCHORS = {
-    "cod", "dat", "dia", "doi", "dong", "giao", "gio",
-    "hanh", "hoan", "hotline", "khieu", "lap", "lien", "luu", "mo", "mua", "nai",
-    "online", "phi", "quyen", "ship", "sinh", "sua", "thanh", "thap", "thu", "toan", "tong",
-    "tra", "van", "chuyen", "lieu", "xoa",
-}
-
 def _system_prompt(addr: str, self_term: str) -> str:
     return (
         "Bạn là nhân viên chăm sóc khách hàng của cửa hàng điện máy. NGUYÊN TẮC:\n"
@@ -73,11 +64,6 @@ def _tokens(text: str) -> List[str]:
     ]
 
 
-def _has_policy_anchor(text: str) -> bool:
-    tokens = set(_tokens(text))
-    return bool(tokens & _POLICY_ANCHORS)
-
-
 @lru_cache(maxsize=4)
 def load_policy_chunks(policy_dir: Optional[str] = None) -> tuple:
     """Đọc mọi file .md trong thư mục chính sách, cắt chunk theo heading `## `."""
@@ -107,11 +93,6 @@ def search_policy(query: str, top_k: int = 3, policy_dir: Optional[str] = None,
     category (nhóm hàng khách đang bàn) được trộn vào truy vấn để chunk nhắc tới
     nhóm đó thắng chunk chung chung."""
     chunks = load_policy_chunks(policy_dir)
-    # Không có category và cũng không có từ nghiệp vụ => đây không phải một
-    # truy vấn policy đủ mạnh. Fail closed thay vì lấy đại chunk có một từ chung.
-    if not category and not _has_policy_anchor(query):
-        return []
-
     q_tokens = set(_tokens(f"{query} {category or ''}"))
     if not chunks or not q_tokens:
         return []
@@ -153,11 +134,11 @@ def answer_policy(query: str, llm=None, policy_dir: Optional[str] = None,
     """Soạn câu trả lời chính sách THEO NGỮ CẢNH hội thoại (nhóm hàng khách đang bàn).
     LLM lỗi/bịa số -> trả nguyên văn chunk khớp nhất."""
     retrieval_query = query
-    # Follow-up kiểu "tủ lạnh thì sao" cần mượn chủ đề policy gần nhất (vd giao
-    # hàng) để xếp đúng chunk, nhưng chỉ khi category đã được catalog xác nhận.
-    if category and not _has_policy_anchor(query):
+    # Router chỉ gọi node này sau khi intent đã xác nhận câu hỏi policy. Với
+    # follow-up ngắn như "tủ lạnh thì sao", mượn câu hỏi gần nhất để giữ chủ đề.
+    if category:
         for message in reversed(history or []):
-            if message.get("role") == "user" and _has_policy_anchor(message.get("content", "")):
+            if message.get("role") == "user" and message.get("content"):
                 retrieval_query = f"{message['content']} {query}"
                 break
     hits = search_policy(retrieval_query, top_k=3, policy_dir=policy_dir, category=category)
