@@ -5,12 +5,11 @@ from typing import Any, Dict, List, Optional, TypedDict
 from app.agent_core.intent import IntentServiceUnavailableError, extract_intent
 from app.agent_core.policy import answer_policy
 from app.agent_core.retriever import (search_products, price_spread_products, get_catalog_metadata,
-                                       category_table_for, hydrate_rows)
+                                       category_table_for, hydrate_rows, find_product_by_identifier)
 from app.agent_core.sql_tool import agent_query
 from app.agent_core.advisor import build_cards, generate_advisor
 from app.agent_core.compare import build_comparison
-from app.agent_core.detail import (is_detail_question, wants_product_list,
-                                    resolve_product_row, answer_detail, closing_hook)
+from app.agent_core.detail import answer_detail, closing_hook
 from app.agent_core.sales import (is_order_confirmation, is_aftersales_question,
                                   cross_sell_suggestion, cross_sell_line)
 from app.agent_core.presenters import product_display_name, load_specs, build_detail_card
@@ -42,6 +41,7 @@ class AgentState(TypedDict, total=False):
     clarify_count: int
     customer_addr: str
     purchase_history: List[Dict[str, Any]]
+    direct_product: Optional[Dict[str, Any]]
 
 
 def _cfg(config, key, default=None):
@@ -74,14 +74,32 @@ def _sku(row: Dict[str, Any]) -> str:
     return str(row.get("model_code") or row.get("sku") or product_display_name(row))
 
 
+def _selected_row(state: AgentState) -> Optional[Dict[str, Any]]:
+    """Chỉ nhận lựa chọn do AI trả về, rồi đối chiếu lại candidate của phiên."""
+    selected_id = str(state.get("intent", {}).get("selected_product_id") or "")
+    if not selected_id:
+        return None
+    return next((row for row in (state.get("last_products") or []) if _sku(row) == selected_id), None)
+
+
 def intent_node(state: AgentState, config) -> AgentState:
     query = state.get("query", "")
     history = list(state.get("history", []))
     customer_addr = resolve_address(query, state.get("customer_addr"))
     self_term = resolve_self_term(customer_addr)
+    # Model code/SKU là khoá tra cứu, không phải một "ý định" để LLM đoán. Ưu
+    # tiên catalog để câu như "chi tiết Xiaomi 171303" không bị LLM suy diễn sang
+    # ngành hàng hoặc tự gắn các tiêu chí không có trong câu hỏi.
+    direct_product = find_product_by_identifier(query, _cfg(config, "db_path"))
+    if direct_product is not None:
+        history = history + [{"role": "user", "content": query}]
+        log.info("intent_node: exact product identifier -> %s", product_display_name(direct_product))
+        return {"intent": {"is_product_detail_question": True}, "direct_product": direct_product,
+                "history": history, "customer_addr": customer_addr}
     _notify(config, f"{self_term.capitalize()} đang đọc yêu cầu của {customer_addr}…")
     try:
         intent = extract_intent(query, history, _cfg(config, "llm"), _cfg(config, "db_path"),
+                                candidate_products=state.get("last_products") or [],
                                 addr=customer_addr, self_term=self_term)
     except IntentServiceUnavailableError:
         log.warning("intent_node: intent service unavailable")
@@ -108,9 +126,11 @@ def _is_detail_followup(state: AgentState) -> bool:
     cat = intent.get("category")
     if cat and last and last[0].get("category") and cat != last[0].get("category"):
         return False
-    if resolve_product_row(query, last) is not None:
+    # AI chọn model_code từ candidate được đưa vào prompt; _selected_row kiểm tra
+    # mã đó có thực trong danh sách trước khi cho qua node detail.
+    if _selected_row(state) is not None and intent.get("is_product_detail_question"):
         return True
-    if state.get("focused_sku") and is_detail_question(query) and not wants_product_list(query):
+    if state.get("focused_sku") and intent.get("is_product_detail_question") and not intent.get("wants_comparison"):
         return True
     return False
 
@@ -130,7 +150,9 @@ def router_edge(state: AgentState) -> str:
     # hay không, thay vì biến mọi lượt thiếu ngân sách thành cùng một kịch bản.
     missing_required = not intent.get("category")
     declines = bool(intent.get("declines_more_info"))
-    if intent.get("service_unavailable"):
+    if state.get("direct_product") is not None:
+        route = "detail"
+    elif intent.get("service_unavailable"):
         route = "unavailable"
     # Phạm vi catalog phải thắng policy: nếu khách hỏi chính sách cho một mặt hàng
     # không kinh doanh thì không được tra tài liệu rồi trả nhầm chính sách nhóm khác.
@@ -306,11 +328,13 @@ def detail_node(state: AgentState, config) -> AgentState:
     _notify(config, f"{_self(state).capitalize()} đang tra cứu chi tiết sản phẩm…")
     query = state.get("query", "")
     last = state.get("last_products", []) or []
-    row = resolve_product_row(query, last)
+    row = state.get("direct_product")
+    if row is None:
+        row = _selected_row(state)
     if row is None and state.get("focused_sku"):
         row = next((r for r in last if _sku(r) == state["focused_sku"]), None)
     if row is None:
-        row = last[0]
+        raise ValueError("detail_node called without an AI-validated product selection")
     log.info("detail_node: resolved -> %s", product_display_name(row))
     message, card = answer_detail(row, query, _cfg(config, "llm"), addr=_addr(state), self_term=_self(state))
     # Lần đầu khách xem chi tiết sản phẩm này -> chốt ngay: gỡ trước rào cản phí giao
@@ -328,7 +352,8 @@ def detail_node(state: AgentState, config) -> AgentState:
     history = state.get("history", []) + [{"role": "assistant", "content": message}]
     return {"response": message, "stage": "recommended", "question": None,
             "cards": [card.model_dump()], "comparison": None, "assumptions": [], "warnings": [],
-            "focused_sku": _sku(row), "history": history}
+            "focused_sku": _sku(row), "last_products": [row], "direct_product": None,
+            "history": history}
 
 
 def confirm_purchase_node(state: AgentState, config) -> AgentState:
@@ -336,7 +361,7 @@ def confirm_purchase_node(state: AgentState, config) -> AgentState:
     cho chăm sóc sau mua) và chốt sổ: gỡ rào phí giao hàng + gợi mở mua kèm 1 lần nữa."""
     query = state.get("query", "")
     last = state.get("last_products", []) or []
-    row = resolve_product_row(query, last) if last else None
+    row = _selected_row(state)
     if row is None and state.get("focused_sku"):
         row = next((r for r in last if _sku(r) == state["focused_sku"]), None)
     if row is None and last:

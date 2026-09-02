@@ -43,6 +43,14 @@ def normalize_intent_scope(intent: Dict[str, Any], categories: List[str]) -> Dic
 
 # Pydantic schema mô tả ý định tìm kiếm sản phẩm.
 class IntentSchema(BaseModel):
+    is_product_detail_question: bool = Field(
+        default=False,
+        description="True khi khách đang hỏi thêm thông tin về MỘT sản phẩm đã xuất hiện trong lịch sử, kể cả gọi là 'máy này', 'máy đầu tiên' hoặc nêu hãng/mẫu. False khi muốn xem thêm danh sách, so sánh, hay bắt đầu nhu cầu mua mới."
+    )
+    selected_product_id: Optional[str] = Field(
+        default=None,
+        description="Mã model của một candidate mà khách đang nói tới. Chỉ được chọn đúng model_code trong danh sách candidate; không tự tạo mã."
+    )
     is_meta_inquiry: bool = Field(
         default=False,
         description="True khi khách hỏi khái niệm/thông số liên quan sản phẩm (OLED, Inverter, dung tích...) hoặc hỏi tổng quan catalog. Không dùng cho kiến thức phổ thông ngoài mua sắm."
@@ -122,7 +130,7 @@ class IntentServiceUnavailableError(RuntimeError):
 
 
 _SCHEMA_HINT = (
-    '{"is_meta_inquiry": bool, "meta_reply": string|null, "is_policy_question": bool, '
+    '{"is_product_detail_question": bool, "selected_product_id": string|null, "is_meta_inquiry": bool, "meta_reply": string|null, "is_policy_question": bool, '
     '"is_chitchat": bool, "smalltalk_reply": string|null, '
     '"category": string|null, "transition_message": string|null, "unsupported_product": string|null, '
     '"related_categories": string[], "budget_max": number|null, '
@@ -133,7 +141,8 @@ _SCHEMA_HINT = (
 
 
 def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
-                   llm=None, db_path: Optional[str] = None, addr: str = "anh/chị",
+                   llm=None, db_path: Optional[str] = None,
+                   candidate_products: Optional[List[Dict[str, Any]]] = None, addr: str = "anh/chị",
                    self_term: str = "em") -> Dict[str, Any]:
     """Trích ý định qua DeepSeek; không suy đoán intent khi dịch vụ lỗi."""
     if llm is None:
@@ -147,6 +156,9 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
             "Ánh xạ danh mục theo ngữ nghĩa (VD: laptop/macbook/pc/desktop -> 'Máy tính để bàn'; "
             "ipad/tablet -> 'Máy tính bảng', ...). Nếu câu hỏi mới đổi loại sản phẩm so với lịch sử, "
             "BẮT BUỘC theo danh mục mới.\n"
+            "- is_product_detail_question=true chỉ khi khách đang hỏi tiếp về MỘT sản phẩm trong lịch sử "
+            "(ví dụ 'máy này bảo hành thế nào', 'máy 2 nặng bao nhiêu', 'con LG có gì hay'). "
+            "False nếu khách muốn xem máy khác/danh sách/so sánh, hỏi chính sách cửa hàng, hoặc nêu nhu cầu mua mới.\n"
             "- Nếu khách mô tả một BÀI TOÁN/VẤN ĐỀ thay vì gọi tên sản phẩm (VD: 'bé đi học không được dùng điện thoại nhưng cần liên lạc', 'mùa mưa phơi đồ không khô'), HÃY TỰ SUY LUẬN xem trong các danh mục có sẵn có loại nào giải quyết được không (VD: Đồng hồ thông minh có nghe gọi, Máy sấy quần áo). Nếu có, gán luôn `category` là danh mục đó và BẮT BUỘC viết `transition_message` để giải thích gợi mở khéo léo (VD: 'Dạ nếu cô giáo không cho mang điện thoại thì bé dùng đồng hồ thông minh có nghe gọi được không ạ?').\n"
             "- Nếu khách muốn mua loại sản phẩm KHÔNG thuộc danh mục nào trong CSDL (VD điện thoại, "
             "tivi, nồi cơm điện) và cũng KHÔNG thể dùng sản phẩm nào trong CSDL để thay thế: TUYỆT ĐỐI không gán bừa category gần đúng — để category=null, điền "
@@ -192,18 +204,32 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
             f"- Trong mọi câu chữ hướng tới khách (clarification_questions, transition_message, "
             f"smalltalk_reply, meta_reply): xưng '{self_term}' và gọi khách là '{addr}' (không dùng 'bạn')."
         )
+        candidate_lines = []
+        for row in candidate_products or []:
+            product_id = str(row.get("model_code") or row.get("sku") or "")
+            if product_id:
+                candidate_lines.append(
+                    f"- model_code={product_id}; tên={row.get('brand') or ''} {row.get('display_name') or ''}; "
+                    f"giá={row.get('price_clean') or ''}"
+                )
+        candidate_context = ("\nCandidate đang được phép chọn (selected_product_id phải là đúng một model_code bên dưới):\n"
+                             + "\n".join(candidate_lines)) if candidate_lines else ""
         hist_str = ""
         for m in (history or []):
             role = "User" if m.get("role") == "user" else "Assistant"
             hist_str += f"{role}: {m.get('content')}\n"
-        user = f"Lịch sử:\n{hist_str or 'Không có'}\n\nCâu hỏi mới: {query}"
+        user = f"Lịch sử:\n{hist_str or 'Không có'}{candidate_context}\n\nCâu hỏi mới: {query}"
         raw = llm.complete_json(system, user, _SCHEMA_HINT)
         log.info("intent: trích qua LLM thành công")
         intent = IntentSchema(**{
             k: raw[k] for k in IntentSchema.model_fields if k in raw
         }).model_dump()
         categories = get_catalog_metadata(db_path)["categories"]
-        return normalize_intent_scope(intent, categories)
+        intent = normalize_intent_scope(intent, categories)
+        valid_ids = {str(r.get("model_code") or r.get("sku") or "") for r in candidate_products or []}
+        if intent.get("selected_product_id") not in valid_ids:
+            intent["selected_product_id"] = None
+        return intent
     except Exception as e:
         log.exception("intent: không thể trích intent")
         raise IntentServiceUnavailableError("Intent extraction failed") from e

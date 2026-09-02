@@ -174,11 +174,22 @@ def test_policy_node_uses_category_from_conversation():
 
 def test_router_policy_flag_beats_detail_followup():
     from app.agent_core.agent_engine import router_edge
-    state = {"query": "phí lắp đặt thế nào",  # "thế nào" dính keyword detail
+    state = {"query": "phí lắp đặt thế nào",
              "intent": {"is_policy_question": True, "category": "Tủ Lạnh"},
              "last_products": [{"category": "Tủ Lạnh", "model_code": "X1"}],
              "focused_sku": "X1"}
     assert router_edge(state) == "policy"
+
+
+def test_router_uses_llm_detail_intent_for_implicit_followup():
+    from app.agent_core.agent_engine import router_edge
+    base = {
+        "query": "bảo hành thế nào",
+        "last_products": [{"category": "Tủ Lạnh", "model_code": "X1"}],
+        "focused_sku": "X1",
+    }
+    assert router_edge({**base, "intent": {"is_product_detail_question": True}}) == "detail"
+    assert router_edge({**base, "intent": {"is_product_detail_question": False}}) == "clarify"
 
 
 def test_router_unsupported_product_beats_policy_flag():

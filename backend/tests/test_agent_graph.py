@@ -15,6 +15,9 @@ def _db(tmp_path):
          "specs": {"Dung tích tổng": "300 lít", "Điện năng tiêu thụ": "350 kWh/năm"}},
         {"category": "Tủ Lạnh", "brand": "LG", "model_code": "TL2", "price_clean": 11_000_000,
          "specs": {"Dung tích tổng": "250 lít", "Điện năng tiêu thụ": "300 kWh/năm"}},
+        {"category": "Màn hình máy tính", "brand": "Xiaomi", "model_code": "171303", "price_clean": 6_690_000,
+         "specs": {"Kích thước màn hình": "34 inch", "Độ phân giải": "2K+ (3440 x 1440)",
+                   "Tiện ích": "AMD FreeSync Premium | Điều chỉnh được độ nghiêng"}},
     ])
     return db
 
@@ -89,10 +92,19 @@ def test_detail_followup_uses_memory(tmp_path):
     eng.handle("s3", "mua tủ lạnh dưới 20tr tiết kiệm điện")   # tạo last_products
     eng.llm = FakeLLM(json_responses=[{"category": "Tủ Lạnh", "needs_clarification": False,
                                        "is_meta_inquiry": False, "priority_features": [],
-                                       "clarification_questions": [], "brand": None, "budget_max": None}],
+                                       "clarification_questions": [], "brand": None, "budget_max": None,
+                                       "is_product_detail_question": True, "selected_product_id": "TL1"}],
                       text_responses=["Dạ máy Toshiba dung tích 300 lít ạ."])
     out = eng.handle("s3", "máy 1 dung tích bao nhiêu")
     assert "300" in out["reply"]
+    assert out["recommendation"]["cards"][0]["title"].startswith("Thông tin chi tiết")
+
+
+def test_exact_model_code_bypasses_llm_intent_inference(tmp_path):
+    out = AgentCoreEngine(llm=BoomLLM(), db_path=_db(tmp_path)).handle(
+        "exact-model", "cho tôi xem chi tiết thông số và tính năng của Xiaomi 171303")
+    assert out["stage"] == "recommended"
+    assert "171303" in out["reply"]
     assert out["recommendation"]["cards"][0]["title"].startswith("Thông tin chi tiết")
 
 

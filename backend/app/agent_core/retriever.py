@@ -45,6 +45,32 @@ def get_schema_summary(db_path: Optional[str] = None) -> str:
     cats_str = ", ".join(f"'{c}'" for c in meta["categories"])
     return f"Danh mục sản phẩm hiện có trong CSDL ({len(meta['categories'])} danh mục): [{cats_str}]"
 
+
+def find_product_by_identifier(query: str, db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Trả về sản phẩm khi khách nêu đúng model code hoặc SKU trong catalog.
+
+    Mã là định danh dữ liệu, không phải điều kiện ngữ nghĩa để LLM suy luận. Chỉ
+    nhận chuỗi số từ 5 chữ số để không nhầm ngân sách ngắn với mã sản phẩm; nếu
+    một mã trỏ đến nhiều dòng thì không tự ý chọn biến thể.
+    """
+    identifiers = re.findall(r"(?<!\d)\d{5,}(?!\d)", query)
+    if not identifiers:
+        return None
+    conn = sqlite3.connect(_resolve_db(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        matches: List[sqlite3.Row] = []
+        for identifier in identifiers:
+            matches.extend(conn.execute(
+                "SELECT * FROM all_products WHERE CAST(model_code AS TEXT) = ? "
+                "OR CAST(sku AS TEXT) = ?",
+                (identifier, identifier),
+            ).fetchall())
+    finally:
+        conn.close()
+    unique = {row["id"]: dict(row) for row in matches}
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
 def score_product(prod: Dict[str, Any], query: str, priority_features: Optional[List[str]] = None) -> float:
     """
     Dynamic relevance scoring combining query token overlap, priority feature matches, and spec richness.
