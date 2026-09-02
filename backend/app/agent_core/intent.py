@@ -1,9 +1,15 @@
 import logging
+import json
 from typing import List, Dict, Any, Optional
+import httpx
 from pydantic import BaseModel, Field
 from app.agent_core.retriever import get_catalog_metadata, get_schema_summary
 
 log = logging.getLogger("agent_core")
+
+# Intent opens every recommendation turn. Keep its Responses API request bounded.
+_INTENT_LLM_TIMEOUT_SECONDS = 20.0
+_INTENT_LLM_MAX_TOKENS = 2048
 
 
 def normalize_intent_scope(intent: Dict[str, Any], categories: List[str]) -> Dict[str, Any]:
@@ -152,61 +158,20 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
     try:
         schema_info = get_schema_summary(db_path)
         system = (
-            "Bạn là nhân viên tư vấn điện máy đang lắng nghe khách. "
+            "Bạn là nhân viên tư vấn điện máy. Trích intent theo JSON schema, không thêm văn bản.\n"
             f"{schema_info}\n"
-            "- budget_max BẮT BUỘC là số VNĐ tuyệt đối. Quy đổi cách nói thông dụng của khách: "
-            "'5 củ', '5tr', '5 triệu' đều là 5000000; '5,5 triệu' là 5500000. "
-            "Không bao giờ trả về 5 hoặc 5.5 khi khách đang nói ngân sách theo triệu.\n"
-            "Ánh xạ danh mục theo ngữ nghĩa (VD: laptop/macbook/pc/desktop -> 'Máy tính để bàn'; "
-            "ipad/tablet -> 'Máy tính bảng', ...). Nếu câu hỏi mới đổi loại sản phẩm so với lịch sử, "
-            "BẮT BUỘC theo danh mục mới.\n"
-            "- is_product_detail_question=true chỉ khi khách đang hỏi tiếp về MỘT sản phẩm trong lịch sử "
-            "(ví dụ 'máy này bảo hành thế nào', 'máy 2 nặng bao nhiêu', 'con LG có gì hay'). "
-            "False nếu khách muốn xem máy khác/danh sách/so sánh, hỏi chính sách cửa hàng, hoặc nêu nhu cầu mua mới.\n"
-            "- Nếu khách mô tả một BÀI TOÁN/VẤN ĐỀ thay vì gọi tên sản phẩm (VD: 'bé đi học không được dùng điện thoại nhưng cần liên lạc', 'mùa mưa phơi đồ không khô'), HÃY TỰ SUY LUẬN xem trong các danh mục có sẵn có loại nào giải quyết được không (VD: Đồng hồ thông minh có nghe gọi, Máy sấy quần áo). Nếu có, gán luôn `category` là danh mục đó và BẮT BUỘC viết `transition_message` để giải thích gợi mở khéo léo (VD: 'Dạ nếu cô giáo không cho mang điện thoại thì bé dùng đồng hồ thông minh có nghe gọi được không ạ?').\n"
-            "- Nếu khách muốn mua loại sản phẩm KHÔNG thuộc danh mục nào trong CSDL (VD điện thoại, "
-            "tivi, nồi cơm điện) và cũng KHÔNG thể dùng sản phẩm nào trong CSDL để thay thế: TUYỆT ĐỐI không gán bừa category gần đúng — để category=null, điền "
-            "unsupported_product=<tên loại đó>, và chọn related_categories là 1-3 danh mục CÓ THẬT "
-            "trong CSDL gần với nhu cầu đó nhất.\n"
-            "- unsupported_product CHỈ dùng cho MẶT HÀNG hữu hình khách muốn mua nhưng catalog không có.\n"
-            "- Yêu cầu tạo nội dung/thực hiện tác vụ ngoài mua sắm (viết code, dịch, giải bài tập): "
-            "is_chitchat=true, unsupported_product=null; BẮT BUỘC điền smalltalk_reply từ chối ngắn "
-            "và gợi ý 1-3 danh mục CÓ TRONG CSDL liên quan nếu có.\n"
-            "- Câu hỏi kiến thức ngắn ngoài mua sắm (VD 'kinh tế chính trị là gì?'): "
-            "is_chitchat=true và BẮT BUỘC điền smalltalk_reply trả lời đúng trọng tâm, tối đa 2 câu/60 từ; "
-            "không gọi đó là sản phẩm, không giảng giải dài và BẮT BUỘC kết bằng một câu chuyển nhẹ "
-            "sang nhu cầu mua thiết bị học tập/làm việc.\n"
-            "- is_meta_inquiry=true khi khách hỏi khái niệm/thông số LIÊN QUAN SẢN PHẨM "
-            "(OLED, Inverter, dung tích...) hoặc hỏi tổng quan catalog. BẮT BUỘC điền meta_reply ngắn gọn.\n"
-            "- wants_comparison=true khi khách chủ động yêu cầu đưa ra nhiều sự lựa chọn hoặc so sánh (VD 'so sánh', 'có những option nào', 'các dòng máy'). False nếu khách chỉ nhờ tư vấn chung.\n"
-            "- needs_clarification=true khi KHÁCH TRẢ LỜI QUÁ CHUNG CHUNG và bạn cần hỏi thêm để lọc sản phẩm (mục đích, bối cảnh người dùng, ngân sách). TUYỆT ĐỐI KHÔNG bật cờ này nếu khách đang hỏi ngược lại bạn (đó là is_meta_inquiry). False nếu khách vừa trả lời đủ hoặc từ chối bổ sung.\n"
-            "- clarification_questions: 1-2 câu hỏi NGẮN, tự nhiên như người bán hàng thật, bám đúng bối cảnh "
-            "khách vừa kể. TUYỆT ĐỐI không hỏi lại điều khách đã nói hoặc điều trợ lý đã hỏi trong lịch sử.\n"
-            "- assumptions: các suy đoán bạn tự rút ra mà khách không nói rõ, ghi ngắn gọn.\n"
-            "- declines_more_info=true nếu khách né/từ chối cung cấp thêm ('gợi ý đại', 'gì cũng được', "
-            "'chọn giúp anh/chị',...).\n"
-            "- needs_custom_query=true khi khách ràng buộc theo THÔNG SỐ hoặc cách xếp hạng đặc biệt "
-            "(dung tích/kích thước/số cửa/'ít tốn điện nhất'/'nhẹ nhất'...) — lọc cơ bản ngành+giá+hãng "
-            "không đáp ứng được.\n"
-            "- Số người sử dụng là một ràng buộc thông số: khi khách nói 'nhà 4 người' hoặc tương tự, "
-            "BẮT BUỘC ghi vào priority_features và đặt needs_custom_query=true, kể cả khi khách nói "
-            "'khác gì cũng được'. Câu đó chỉ có nghĩa là không chốt thêm tiêu chí/ngân sách, không được "
-            "bỏ qua số người đã nêu.\n"
-            "- Nếu khách mới nêu ngành hàng và số người sử dụng nhưng CHƯA nêu ngân sách, và không nói "
-            "'khác gì cũng được'/'chọn đại': đặt needs_clarification=true và hỏi ngân sách. Không tự chọn "
-            "sản phẩm chỉ từ số người sử dụng.\n"
-            "- is_policy_question=true khi khách hỏi về CHÍNH SÁCH/VẬN HÀNH cửa hàng: giờ mở/đóng cửa, "
-            "tổng đài/cách liên hệ, địa chỉ, cách đặt hàng online, thời gian/phí giao hàng, phí lắp đặt "
-            "và vật tư, dịch vụ vệ sinh/sửa chữa, hình thức thanh toán/trả góp, hoàn tiền, phí đổi trả "
-            "(hư gì đổi nấy, 1 đổi 1), chính sách bảo hành/đổi trả, khiếu nại, nội quy, hoặc về DỮ LIỆU "
-            "CÁ NHÂN/quyền riêng tư (shop thu thập gì, lưu bao lâu, chia sẻ cho ai, cách xóa "
-            "dữ liệu/tài khoản, bảo mật thông tin). KHÔNG nhầm với "
-            "is_meta_inquiry (giải thích thông số/khái niệm) và KHÔNG nhầm với chitchat. Nếu khách hỏi "
-            "bảo hành/giá của MỘT sản phẩm cụ thể đang tư vấn thì KHÔNG bật cờ này.\n"
-            "- Nếu câu vừa chào vừa nêu nhu cầu ('chào em, cần mua tủ lạnh') thì KHÔNG phải chitchat. "
-            "Nếu khách hỏi về MỘT nhóm sản phẩm cụ thể, gán trực tiếp category tương ứng.\n"
-            f"- Trong mọi câu chữ hướng tới khách (clarification_questions, transition_message, "
-            f"smalltalk_reply, meta_reply): xưng '{self_term}' và gọi khách là '{addr}' (không dùng 'bạn')."
+            "- category phải là đúng danh mục CSDL, suy luận theo ngữ nghĩa; nhu cầu mới thắng lịch sử. "
+            "Nếu mô tả vấn đề, tự chọn danh mục CSDL giải quyết được và viết transition_message. Nếu không "
+            "có sản phẩm thay thế, category=null, điền unsupported_product và 1-3 related_categories có thật.\n"
+            "- budget_max là VNĐ tuyệt đối: '5 củ', '5tr', '5 triệu' đều là 5000000; '5,5 triệu' là 5500000.\n"
+            "- Detail chỉ là câu hỏi tiếp về một candidate lịch sử. Câu hỏi khái niệm/thông số/catalog là meta "
+            "và có meta_reply ngắn; chính sách cửa hàng/dữ liệu cá nhân là policy; xã giao, kiến thức ngoài "
+            "mua sắm hay yêu cầu tạo nội dung là chitchat. Với chitchat BẮT BUỘC điền smalltalk_reply, tối đa "
+            "2 câu/60 từ và chuyển nhẹ về nhu cầu mua sắm.\n"
+            "- Trích brand, ngân sách, ưu tiên; needs_custom_query=true cho ràng buộc thông số/xếp hạng, "
+            "kể cả số người dùng. wants_comparison=true khi khách muốn nhiều lựa chọn. Chỉ needs_clarification "
+            "khi thiếu dữ kiện thật sự, hỏi 1-2 câu ngắn không lặp lại lịch sử; declines_more_info=true khi khách từ chối.\n"
+            f"- Trong mọi câu trả lời hướng khách, xưng '{self_term}' và gọi khách là '{addr}' (không dùng 'bạn')."
         )
         candidate_lines = []
         for row in candidate_products or []:
@@ -223,7 +188,22 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
             role = "User" if m.get("role") == "user" else "Assistant"
             hist_str += f"{role}: {m.get('content')}\n"
         user = f"Lịch sử:\n{hist_str or 'Không có'}{candidate_context}\n\nCâu hỏi mới: {query}"
-        raw = llm.complete_json(system, user, _SCHEMA_HINT)
+        try:
+            raw = llm.complete_json(
+            system, user, _SCHEMA_HINT,
+            timeout=_INTENT_LLM_TIMEOUT_SECONDS,
+            max_tokens=_INTENT_LLM_MAX_TOKENS,
+            )
+        except (httpx.TimeoutException, json.JSONDecodeError) as first_error:
+            # Transport and decoding failures are intermittent in practice.
+            # Retry exactly once with the same bounded request; never fall back
+            # to a heuristic intent classifier.
+            log.warning("intent: LLM lần đầu lỗi (%s), thử lại một lần", first_error)
+            raw = llm.complete_json(
+                system, user, _SCHEMA_HINT,
+                timeout=_INTENT_LLM_TIMEOUT_SECONDS,
+                max_tokens=_INTENT_LLM_MAX_TOKENS,
+            )
         log.info("intent: trích qua LLM thành công")
         intent = IntentSchema(**{
             k: raw[k] for k in IntentSchema.model_fields if k in raw

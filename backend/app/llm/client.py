@@ -1,13 +1,16 @@
 from __future__ import annotations
 import json
 import re
+import ssl
 from typing import Iterator, Protocol
 import httpx
 from app.config import get_settings
 
 
 class LLMClient(Protocol):
-    def complete_json(self, system: str, user: str, schema_hint: str = "") -> dict: ...
+    def complete_json(self, system: str, user: str, schema_hint: str = "",
+                      timeout: float | None = None, max_tokens: int | None = None,
+                      reasoning_effort: str = "low") -> dict: ...
     def complete_text(self, system: str, user: str) -> str: ...
     def stream_text(self, system: str, user: str) -> Iterator[str]: ...
 
@@ -20,23 +23,83 @@ class DeepSeekClient:
         self.model = model
         self.timeout = timeout
         self.max_tokens = max_tokens
+        # Do not use ssl.create_default_context(): Python automatically honors
+        # SSLKEYLOGFILE there. A stale/unwritable key-log path then prevents any
+        # HTTPS request from being established. This context still uses the OS
+        # trust store and requires valid server certificates.
+        self._tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        self._tls_context.load_default_certs()
 
-    def _post(self, messages: list[dict]) -> str:
+    def _http_client(self, timeout: float | None) -> httpx.Client:
+        return httpx.Client(
+            timeout=self.timeout if timeout is None else timeout,
+            verify=self._tls_context,
+        )
+
+    def _post(self, messages: list[dict], timeout: float | None = None,
+              max_tokens: int | None = None) -> str:
         # The client deliberately avoids response_format={"type":"json_object"}:
         # prompting plus _extract_json works across OpenAI-compatible gateways.
         # Reasoning-capable models may emit reasoning_content separately; it is ignored.
         payload = {"model": self.model, "messages": messages,
-                   "temperature": 0.2, "max_tokens": self.max_tokens}
+                   "temperature": 0.2, "max_tokens": self.max_tokens if max_tokens is None else max_tokens}
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        with httpx.Client(timeout=self.timeout) as c:
+        with self._http_client(timeout) as c:
             r = c.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
             r.raise_for_status()
             content = r.json()["choices"][0]["message"].get("content")
-            if content is None:
+            if not isinstance(content, str) or not content.strip():
                 raise ValueError(
-                    "LLM trả về content rỗng (null). Kiểm tra endpoint/model, "
+                    "LLM trả về content rỗng. Kiểm tra endpoint/model, "
                     "hoặc tăng max_tokens nếu reasoning model dùng hết token.")
             return content
+
+    @staticmethod
+    def _response_output_text(response: dict) -> str:
+        """Read all visible text blocks from a B.AI/OpenAI Responses response."""
+        parts: list[str] = []
+        for item in response.get("output") or []:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            for block in item.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "output_text":
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+        return "".join(parts)
+
+    def _post_responses_json(self, instructions: str, user: str, timeout: float | None,
+                             max_tokens: int | None, reasoning_effort: str) -> str:
+        """Use B.AI's Responses API for structured, low-reasoning JSON work.
+
+        The Chat Completions compatibility endpoint can return a completed
+        DeepSeek reasoning turn with `content: null`. Responses exposes a
+        supported reasoning-effort control and separates reasoning from visible
+        message text, which is the appropriate API for agent JSON calls.
+        """
+        payload = {
+            "model": self.model,
+            "instructions": instructions,
+            "input": [{"role": "user", "content": user}],
+            "max_output_tokens": self.max_tokens if max_tokens is None else max_tokens,
+            "reasoning": {"effort": reasoning_effort},
+            # Enforced by the provider, rather than relying on a prompt-only
+            # request for JSON that can be malformed by a natural-language model.
+            "text": {"format": {"type": "json_object"}},
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        with self._http_client(timeout) as c:
+            r = c.post(f"{self.base_url}/responses", json=payload, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+        text = self._response_output_text(data)
+        if text.strip():
+            return text
+        usage = data.get("usage") or {}
+        reasoning_tokens = (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
+        raise ValueError(
+            "LLM Responses không có visible text "
+            f"(status={data.get('status')!r}, reasoning_tokens={reasoning_tokens!r}).")
 
     @staticmethod
     def _extract_json(raw: str) -> dict:
@@ -50,11 +113,13 @@ class DeepSeekClient:
                 raw = brace.group(0)
         return json.loads(raw)
 
-    def complete_json(self, system: str, user: str, schema_hint: str = "") -> dict:
+    def complete_json(self, system: str, user: str, schema_hint: str = "",
+                      timeout: float | None = None, max_tokens: int | None = None,
+                      reasoning_effort: str = "low") -> dict:
         sys = system + ("\n\nCHỈ trả về một object JSON hợp lệ, không kèm giải thích hay văn bản thừa."
                         + (f" Schema:\n{schema_hint}" if schema_hint else ""))
-        return self._extract_json(self._post(
-            [{"role": "system", "content": sys}, {"role": "user", "content": user}]))
+        return self._extract_json(
+            self._post_responses_json(sys, user, timeout, max_tokens, reasoning_effort))
 
     def complete_text(self, system: str, user: str) -> str:
         return self._post(
@@ -91,9 +156,14 @@ class FakeLLM:
         self._json = list(json_responses or [])
         self._text = list(text_responses or [])
         self.calls: list[tuple[str, str]] = []
+        self.json_options: list[dict] = []
 
-    def complete_json(self, system: str, user: str, schema_hint: str = "") -> dict:
+    def complete_json(self, system: str, user: str, schema_hint: str = "",
+                      timeout: float | None = None, max_tokens: int | None = None,
+                      reasoning_effort: str = "low") -> dict:
         self.calls.append((system, user))
+        self.json_options.append({"timeout": timeout, "max_tokens": max_tokens,
+                                  "reasoning_effort": reasoning_effort})
         return self._json.pop(0) if self._json else {}
 
     def complete_text(self, system: str, user: str) -> str:

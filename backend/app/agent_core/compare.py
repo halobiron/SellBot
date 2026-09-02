@@ -9,10 +9,12 @@ from app.advice.provenance import format_vnd
 
 log = logging.getLogger("agent_core")
 
-# A full catalog row can have dozens of shared fields. Asking the model to emit
-# every rule in one JSON response makes the response truncate/fail, leaving the
-# comparison entirely neutral. Keep each semantic pass small and merge rules.
-_RULES_PER_LLM_CALL = 12
+# Comparison must never turn a single customer request into N sequential LLM
+# calls. The model chooses the objectively rankable criteria worth
+# highlighting; every other catalog field remains visible, but neutral.
+_MAX_HIGHLIGHTED_RULES = 15
+_COMPARE_LLM_TIMEOUT_SECONDS = 15.0
+_COMPARE_LLM_MAX_TOKENS = 2048
 
 _MISSING = "chưa có dữ liệu"
 _GOOD_LABEL_2 = "Vượt trội"
@@ -103,7 +105,8 @@ def _need_cells_for_field(rule: ComparisonRule,
     return cells
 
 
-def _comparison_rules(fields: List[str], specs_per: List[Dict[str, str]], llm: Any) -> Dict[str, ComparisonRule]:
+def _comparison_rules(fields: List[str], specs_per: List[Dict[str, str]], llm: Any,
+                      priority_features: List[str]) -> Dict[str, ComparisonRule]:
     """Nhờ AI nhận diện hướng so sánh từ dữ liệu thực, không dùng danh sách field cứng.
 
     Chỉ chấp nhận hướng khi model khẳng định được một chiều khách quan. Nếu tiêu
@@ -113,8 +116,10 @@ def _comparison_rules(fields: List[str], specs_per: List[Dict[str, str]], llm: A
         return {}
     system = (
         "Bạn là bộ phân tích ngữ nghĩa thông số sản phẩm. Với từng field và các giá trị "
-        "catalog được cung cấp, quyết định liệu có một hướng so sánh KHÁCH QUAN cho đa số "
-        "người mua hay không. Chỉ dùng dữ liệu đã cho; không suy diễn tính năng không có. "
+        "catalog được cung cấp, hãy CHỌN TỐI ĐA 15 tiêu chí đáng làm nổi bật, ưu tiên nhu cầu "
+        "khách nêu ra. Cố gắng bao phủ mọi thông số có thể xếp hạng khách quan, đặc biệt các "
+        "giá trị số kèm đơn vị; chỉ bỏ qua tiêu chí thực sự phụ thuộc gu/mục đích. Chỉ dùng dữ "
+        "liệu đã cho; không suy diễn tính năng không có. "
         "direction=min khi số nhỏ hơn tốt hơn, max khi số lớn hơn tốt hơn, none khi phụ thuộc "
         "nhu cầu/không thể xếp hạng. kind=number nếu giá trị có số và dùng chính số đó. "
         "kind=ranked khi cần hiểu giá trị dạng chữ (ví dụ chuẩn/độ phân giải); khi đó scores "
@@ -123,42 +128,44 @@ def _comparison_rules(fields: List[str], specs_per: List[Dict[str, str]], llm: A
     schema = ('{"rules":[{"field":"tên field đúng nguyên văn","direction":"min|max|none",'
               '"kind":"number|ranked","scores":[number|null]}]}')
     rules: Dict[str, ComparisonRule] = {}
-    for start in range(0, len(fields), _RULES_PER_LLM_CALL):
-        batch = fields[start:start + _RULES_PER_LLM_CALL]
-        samples = [{"field": field, "values": [sp.get(field) for sp in specs_per]}
-                   for field in batch]
-        try:
-            result = llm.complete_json(system, json.dumps(samples, ensure_ascii=False), schema)
-        except Exception as exc:
-            # One failed batch must not discard rules already inferred for the
-            # remaining fields. The affected fields remain neutral only.
-            log.warning("compare: không suy ra được thang cho batch %d-%d (%s)",
-                        start + 1, start + len(batch), exc)
+    samples = [
+        {"field": field, "values": [str(sp.get(field) or "")[:180] for sp in specs_per]}
+        for field in fields
+    ]
+    user = json.dumps({"customer_priorities": priority_features or [], "fields": samples}, ensure_ascii=False)
+    try:
+        result = llm.complete_json(system, user, schema, timeout=_COMPARE_LLM_TIMEOUT_SECONDS,
+                                   max_tokens=_COMPARE_LLM_MAX_TOKENS, reasoning_effort="none")
+    except Exception as exc:
+        # The table is still useful with raw, source-grounded values. Do not retry
+        # per field: that would multiply latency and cost during an outage.
+        log.warning("compare: không suy ra được thang (%s); hiển thị trung tính", exc)
+        return rules
+
+    allowed = set(fields)
+    for item in (result.get("rules", []) if isinstance(result, dict) else [])[:_MAX_HIGHLIGHTED_RULES]:
+        if not isinstance(item, dict):
             continue
-        allowed = set(batch)
-        for item in result.get("rules", []) if isinstance(result, dict) else []:
-            if not isinstance(item, dict):
+        field = item.get("field")
+        raw_direction = str(item.get("direction") or "").strip().lower()
+        direction = {
+            "min": "min", "lower": "min", "lower_better": "min", "thấp": "min",
+            "max": "max", "higher": "max", "higher_better": "max", "cao": "max",
+        }.get(raw_direction)
+        if field not in allowed or direction is None:
+            continue
+        kind = item.get("kind")
+        scores = item.get("scores")
+        if kind == "ranked":
+            if not isinstance(scores, list) or len(scores) != len(specs_per):
                 continue
-            field = item.get("field")
-            raw_direction = str(item.get("direction") or "").strip().lower()
-            direction = {
-                "min": "min", "lower": "min", "lower_better": "min", "thấp": "min",
-                "max": "max", "higher": "max", "higher_better": "max", "cao": "max",
-            }.get(raw_direction)
-            if field not in allowed or direction is None:
+            try:
+                normalized_scores = tuple(float(score) if score is not None else None for score in scores)
+            except (TypeError, ValueError):
                 continue
-            kind = item.get("kind")
-            scores = item.get("scores")
-            if kind == "ranked":
-                if not isinstance(scores, list) or len(scores) != len(specs_per):
-                    continue
-                try:
-                    normalized_scores = tuple(float(score) if score is not None else None for score in scores)
-                except (TypeError, ValueError):
-                    continue
-                rules[field] = ComparisonRule(field, direction, "ranked", normalized_scores)
-            else:
-                rules[field] = ComparisonRule(field, direction)
+            rules[field] = ComparisonRule(field, direction, "ranked", normalized_scores)
+        else:
+            rules[field] = ComparisonRule(field, direction)
     log.info("compare: AI đã suy ra %d/%d thang so sánh", len(rules), len(fields))
     return rules
 
@@ -251,7 +258,7 @@ def build_comparison(rows: List[Dict[str, Any]], priority_features: List[str],
                 field_count[k] = field_count.get(k, 0) + 1
     prefs_low = [p.lower() for p in (priority_features or [])]
     common_fields = [f for f, count in field_count.items() if count >= 2]
-    rules = _comparison_rules(common_fields, specs_per, llm)
+    rules = _comparison_rules(common_fields, specs_per, llm, priority_features or [])
 
     def rank(field: str):
         pref_hit = any(p in field.lower() for p in prefs_low)

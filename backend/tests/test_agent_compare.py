@@ -91,7 +91,7 @@ def test_all_shared_fields_are_kept_not_limited_to_four():
     assert {"A", "B", "C", "D", "E"}.issubset({row.label for row in table.rows})
 
 
-def test_comparison_rules_are_batched_for_large_catalogs():
+def test_comparison_rules_use_one_bounded_llm_call_for_large_catalogs():
     fields = {f"Thông số {i}": str(i) for i in range(13)}
     fields2 = {f"Thông số {i}": str(i + 1) for i in range(13)}
     rows = [
@@ -101,13 +101,34 @@ def test_comparison_rules_are_batched_for_large_catalogs():
          "key_specs_summary": "", "full_specs_json": json.dumps(fields2)},
     ]
     llm = FakeLLM(json_responses=[
-        {"rules": [{"field": "Thông số 0", "direction": "max", "kind": "number"}]},
-        {"rules": [{"field": "Thông số 12", "direction": "max", "kind": "number"}]},
+        {"rules": [
+            {"field": "Thông số 0", "direction": "max", "kind": "number"},
+            {"field": "Thông số 12", "direction": "max", "kind": "number"},
+        ]},
     ])
 
     table = build_comparison(rows, [], llm=llm)
 
     by_label = {row.label: row for row in table.rows}
-    assert len(llm.calls) == 2
+    assert len(llm.calls) == 1
     assert by_label["Thông số 0"].cells[1].is_best is True
     assert by_label["Thông số 12"].cells[1].is_best is True
+
+
+def test_comparison_keeps_more_than_six_model_inferred_rules():
+    fields = {f"Thông số {i}": str(i) for i in range(7)}
+    rows = [
+        {"model_code": "A", "brand": "A", "price_clean": 1, "category": "X",
+         "key_specs_summary": "", "full_specs_json": json.dumps(fields)},
+        {"model_code": "B", "brand": "B", "price_clean": 2, "category": "X",
+         "key_specs_summary": "", "full_specs_json": json.dumps(
+             {field: str(i + 1) for i, field in enumerate(fields)})},
+    ]
+    llm = FakeLLM(json_responses=[{"rules": [
+        {"field": field, "direction": "max", "kind": "number"}
+        for field in fields
+    ]}])
+
+    table = build_comparison(rows, [], llm=llm)
+
+    assert sum(row.is_need_row for row in table.rows) == 7

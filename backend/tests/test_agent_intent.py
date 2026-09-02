@@ -1,5 +1,6 @@
 from app.llm.client import FakeLLM
 import pytest
+import httpx
 
 from app.agent_core.intent import IntentServiceUnavailableError, extract_intent
 from tests.agent_helpers import make_db
@@ -34,6 +35,24 @@ def test_llm_intent_maps_fields(tmp_path):
     assert intent["budget_max"] == 20000000
     assert intent["priority_features"] == ["tiết kiệm điện"]
     assert intent["needs_clarification"] is False
+    assert llm.json_options[0] == {"timeout": 20.0, "max_tokens": 2048, "reasoning_effort": "low"}
+
+
+def test_intent_retries_one_transient_llm_timeout(tmp_path):
+    class TimeoutThenSuccess:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.ReadTimeout("gateway timed out")
+            return {"category": "Tủ Lạnh", "needs_clarification": False}
+
+    llm = TimeoutThenSuccess()
+    intent = extract_intent("mua tủ lạnh", [], llm, _db(tmp_path))
+    assert intent["category"] == "Tủ Lạnh"
+    assert llm.calls == 2
 
 
 def test_intent_prompt_requires_budget_in_absolute_vnd(tmp_path):
