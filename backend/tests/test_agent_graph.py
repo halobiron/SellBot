@@ -33,7 +33,10 @@ def _reco_llm():
     return FakeLLM(
         json_responses=[{"category": "Tủ Lạnh", "budget_max": 20000000, "priority_features": ["tiết kiệm điện"],
                          "needs_clarification": False, "is_meta_inquiry": False,
-                         "clarification_questions": [], "brand": None}],
+                         "clarification_questions": [], "brand": None},
+                        {}, {}, {}, {},  # SQL tool thử tối đa 4 lần trước khi fallback
+                        {"rules": [{"field": "Điện năng tiêu thụ", "direction": "lower_better",
+                                    "kind": "number"}]}],
         text_responses=["Máy Toshiba giá 12.400.000đ và LG giá 11.000.000đ, cả hai tiết kiệm điện tốt."])
 
 
@@ -45,6 +48,9 @@ def test_recommend_turn_shape(tmp_path):
     assert len(out["recommendation"]["cards"]) >= 2
     assert out["recommendation"]["comparison"] is not None
     assert "12.400.000" in out["reply"]
+    energy = next(row for row in out["recommendation"]["comparison"]["rows"]
+                  if row["label"] == "Điện năng tiêu thụ")
+    assert energy["cells"][0]["is_best"] is True
 
 
 def test_clarify_turn(tmp_path):

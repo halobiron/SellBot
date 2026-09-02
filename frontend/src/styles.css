@@ -215,6 +215,7 @@ body {
 .chat-viewport {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px 18px;
 }
 
@@ -222,6 +223,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  width: 100%;
+  min-width: 0;
   max-width: 780px;
   margin: 0 auto;
 }
@@ -230,6 +233,8 @@ body {
 .msg {
   display: flex;
   flex-direction: column;
+  width: 100%;
+  min-width: 0;
   animation: fadeIn 0.2s ease-out;
 }
 @keyframes fadeIn {
@@ -566,6 +571,9 @@ body {
 
 /* Comparison Table */
 .compare-container {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -577,6 +585,10 @@ body {
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .compare-title {
@@ -584,9 +596,34 @@ body {
   font-weight: 700;
   color: var(--text-main);
 }
+.compare-scroll-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
 
 .compare-table-wrapper {
-  overflow-x: auto;
+  overflow-x: scroll;
+  overflow-y: hidden;
+  max-width: 100%;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+.compare-table-wrapper::-webkit-scrollbar {
+  height: 10px;
+}
+.compare-table-wrapper::-webkit-scrollbar-track {
+  background: var(--bg-subtle);
+}
+.compare-table-wrapper::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+.compare-table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }
 
 .clean-table {
@@ -688,6 +725,25 @@ body {
 
 .tradeoff-tr {
   background: rgba(245, 158, 11, 0.06);
+}
+.more-specs-tr td {
+  padding: 0;
+  text-align: center;
+  background: var(--bg-subtle);
+}
+.more-specs-btn {
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.more-specs-btn:hover {
+  background: rgba(37, 99, 235, 0.06);
 }
 .tradeoff-desc {
   font-size: 11.5px;

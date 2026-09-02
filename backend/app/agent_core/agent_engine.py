@@ -466,7 +466,8 @@ def compare_node(state: AgentState, config) -> AgentState:
     res = state.get("retrieval", {})
     rows = res.get("top_3_products", [])
     intent = state.get("intent", {})
-    table = build_comparison(rows, intent.get("priority_features", []), intent.get("budget_max"))
+    table = build_comparison(rows, intent.get("priority_features", []), intent.get("budget_max"),
+                             llm=_cfg(config, "llm"))
     return {"comparison": table.model_dump() if table else None}
 
 

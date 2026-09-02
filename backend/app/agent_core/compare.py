@@ -1,14 +1,15 @@
 from __future__ import annotations
+from dataclasses import dataclass
+import json
+import logging
 from typing import Any, Dict, List
 from app.schemas import ComparisonTable, ComparisonRow, ComparisonCell
 from app.agent_core.presenters import product_display_name, load_specs, parse_leading_number
 from app.advice.provenance import format_vnd
 
-_MISSING = "chưa có dữ liệu"
-# Suy hướng "tốt hơn" theo tên field (khớp chuỗi con).
-_LOWER_BETTER = ("điện năng", "tiêu thụ", "độ ồn", "tiêu thụ nước", "trọng lượng", "khối lượng")
-_HIGHER_BETTER = ("dung tích", "pin", "bảo hành", "công suất", "tốc độ", "độ sáng", "bộ nhớ")
+log = logging.getLogger("agent_core")
 
+_MISSING = "chưa có dữ liệu"
 _GOOD_LABEL_2 = "Vượt trội"
 _BAD_LABEL_2 = "Kém hơn"
 _GOOD_LABEL_3 = "Vượt trội"
@@ -16,13 +17,19 @@ _WARN_LABEL_3 = "Ở mức khá"
 _BAD_LABEL_3 = "Thấp nhất nhóm"
 
 
-def _direction(field: str) -> str | None:
-    f = field.lower()
-    if any(k in f for k in _LOWER_BETTER):
-        return "min"
-    if any(k in f for k in _HIGHER_BETTER):
-        return "max"
-    return None
+@dataclass(frozen=True)
+class ComparisonRule:
+    """Rule ngắn hạn do LLM suy ra từ tên và giá trị thực của field."""
+    field: str
+    direction: str
+    kind: str = "number"
+    scores: tuple[float | None, ...] | None = None
+
+
+def _values_for_rule(rule: ComparisonRule, specs_per: List[Dict[str, str]]) -> List[float | None]:
+    if rule.kind == "ranked" and rule.scores is not None:
+        return list(rule.scores)
+    return [parse_leading_number(specs.get(rule.field)) for specs in specs_per]
 
 
 def _best_indices(nums: List[float | None], direction: str) -> set[int]:
@@ -66,11 +73,10 @@ def _rank_statuses(nums: List[float | None], direction: str) -> List[str | None]
     return out
 
 
-def _need_cells_for_field(field: str, specs_per: List[Dict[str, str]]) -> List[ComparisonCell] | None:
-    nums = [parse_leading_number(sp.get(field)) for sp in specs_per]
-    direction = _direction(field)
-    if direction is None:
-        return None
+def _need_cells_for_field(rule: ComparisonRule,
+                          specs_per: List[Dict[str, str]]) -> List[ComparisonCell]:
+    nums = _values_for_rule(rule, specs_per)
+    field, direction = rule.field, rule.direction
     statuses = _rank_statuses(nums, direction)
     n_present = sum(1 for v in nums if v is not None)
     cells: List[ComparisonCell] = []
@@ -90,6 +96,61 @@ def _need_cells_for_field(field: str, specs_per: List[Dict[str, str]]) -> List[C
         cells.append(ComparisonCell(value=raw, available=True, is_best=(status == "good"),
                                      status=status, verdict=verdict, detail=raw))
     return cells
+
+
+def _comparison_rules(fields: List[str], specs_per: List[Dict[str, str]], llm: Any) -> Dict[str, ComparisonRule]:
+    """Nhờ AI nhận diện hướng so sánh từ dữ liệu thực, không dùng danh sách field cứng.
+
+    Chỉ chấp nhận hướng khi model khẳng định được một chiều khách quan. Nếu tiêu
+    chí phụ thuộc gu/mục đích sử dụng hoặc model lỗi, field được hiển thị trung tính.
+    """
+    if llm is None or not fields:
+        return {}
+    samples = [{"field": field, "values": [sp.get(field) for sp in specs_per]}
+               for field in fields]
+    system = (
+        "Bạn là bộ phân tích ngữ nghĩa thông số sản phẩm. Với từng field và các giá trị "
+        "catalog được cung cấp, quyết định liệu có một hướng so sánh KHÁCH QUAN cho đa số "
+        "người mua hay không. Chỉ dùng dữ liệu đã cho; không suy diễn tính năng không có. "
+        "direction=min khi số nhỏ hơn tốt hơn, max khi số lớn hơn tốt hơn, none khi phụ thuộc "
+        "nhu cầu/không thể xếp hạng. kind=number nếu giá trị có số và dùng chính số đó. "
+        "kind=ranked khi cần hiểu giá trị dạng chữ (ví dụ chuẩn/độ phân giải); khi đó scores "
+        "phải là một số cho từng giá trị theo cùng thứ tự đầu vào, số lớn biểu thị mức cao hơn."
+    )
+    schema = ('{"rules":[{"field":"tên field đúng nguyên văn","direction":"min|max|none",'
+              '"kind":"number|ranked","scores":[number|null]}]}')
+    try:
+        result = llm.complete_json(system, json.dumps(samples, ensure_ascii=False), schema)
+    except Exception as exc:
+        log.warning("compare: không suy ra được thang so sánh (%s)", exc)
+        return {}
+    rules: Dict[str, ComparisonRule] = {}
+    allowed = set(fields)
+    for item in result.get("rules", []) if isinstance(result, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        field = item.get("field")
+        raw_direction = str(item.get("direction") or "").strip().lower()
+        direction = {
+            "min": "min", "lower": "min", "lower_better": "min", "thấp": "min",
+            "max": "max", "higher": "max", "higher_better": "max", "cao": "max",
+        }.get(raw_direction)
+        if field not in allowed or direction is None:
+            continue
+        kind = item.get("kind")
+        scores = item.get("scores")
+        if kind == "ranked":
+            if not isinstance(scores, list) or len(scores) != len(specs_per):
+                continue
+            try:
+                normalized_scores = tuple(float(score) if score is not None else None for score in scores)
+            except (TypeError, ValueError):
+                continue
+            rules[field] = ComparisonRule(field, direction, "ranked", normalized_scores)
+        else:
+            rules[field] = ComparisonRule(field, direction)
+    log.info("compare: AI đã suy ra %d/%d thang so sánh", len(rules), len(fields))
+    return rules
 
 
 def _budget_row(rows: List[Dict[str, Any]], prices: List[float | None], budget_max: float) -> ComparisonRow:
@@ -147,7 +208,7 @@ def _tradeoff_sentences(rows: List[ComparisonRow], n: int) -> List[str]:
 
 
 def build_comparison(rows: List[Dict[str, Any]], priority_features: List[str],
-                     budget_max: float | None = None) -> ComparisonTable | None:
+                     budget_max: float | None = None, llm: Any = None) -> ComparisonTable | None:
     """Bảng so sánh theo nhu cầu khách, mọi ô lấy trực tiếp từ DB (không qua LLM)."""
     unique_rows = []
     seen = set()
@@ -170,28 +231,33 @@ def build_comparison(rows: List[Dict[str, Any]], priority_features: List[str],
     else:
         out_rows.append(_plain_price_row(prices))
 
-    # 2) Spec số dùng chung — ưu tiên field khớp priority_features (đèn tín hiệu), rồi field xuất hiện nhiều nhất
+    # 2) Mọi thông số dùng chung. AI quyết định thang tốt hơn/kém hơn từ tên và
+    # giá trị thực; field không có kết luận chắc chắn vẫn được đặt cạnh nhau.
     specs_per = [load_specs(r) for r in rows]
     field_count: Dict[str, int] = {}
     for sp in specs_per:
         for k, v in sp.items():
-            if parse_leading_number(v) is not None:
+            if v is not None and str(v).strip():
                 field_count[k] = field_count.get(k, 0) + 1
     prefs_low = [p.lower() for p in (priority_features or [])]
+    common_fields = [f for f, count in field_count.items() if count >= 2]
+    rules = _comparison_rules(common_fields, specs_per, llm)
 
     def rank(field: str):
         pref_hit = any(p in field.lower() for p in prefs_low)
-        return (0 if pref_hit else 1, -field_count[field])
+        configured = field in rules
+        return (0 if pref_hit else 1, 0 if configured else 1, -field_count[field], field)
 
-    shared_fields = sorted([f for f, c in field_count.items() if c >= 2], key=rank)[:4]
+    shared_fields = sorted(common_fields, key=rank)
 
     for field in shared_fields:
-        need_cells = _need_cells_for_field(field, specs_per)
-        if need_cells is not None:
+        rule = rules.get(field)
+        if rule is not None:
+            need_cells = _need_cells_for_field(rule, specs_per)
             out_rows.append(ComparisonRow(label=field, unit=None, source="thông số nhà sản xuất",
                                           cells=need_cells,
-                                          better="chỉ số thấp hơn tốt hơn" if _direction(field) == "min"
-                                          else "chỉ số cao hơn tốt hơn",
+                                          better=("chỉ số thấp hơn tốt hơn" if rule.direction == "min"
+                                                  else "chỉ số cao hơn tốt hơn"),
                                           is_need_row=True))
         else:
             cells = [ComparisonCell(value=(sp.get(field) if sp.get(field) else _MISSING),
