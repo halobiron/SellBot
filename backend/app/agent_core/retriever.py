@@ -1,6 +1,5 @@
 import sqlite3
 import re
-import math
 from typing import List, Dict, Any, Optional
 from app.config import get_settings
 
@@ -205,8 +204,12 @@ def search_products(
     is_meta_inquiry: bool = False
 ) -> Dict[str, Any]:
     """
-    Hybrid retriever with exact status recognition ('exact_match', 'budget_fallback', 'no_products_found', 'meta_inquiry').
-    If budget is too low and yields 0 results, dynamically retrieves the cheapest alternatives slightly above budget.
+    Retrieve catalog products using only the customer constraints.
+
+    Budget may include a small, explicit consideration band (+5%) so a markedly
+    better near-budget option is not hidden. This is still one constrained query,
+    never a fallback query: items above the stated budget are flagged for the
+    advisor/UI and brand/category constraints are never relaxed.
     """
     db_path = _resolve_db(db_path)
     query_lower = query.lower()
@@ -233,7 +236,8 @@ def search_products(
         conditions.append("category = ?")
         params.append(category.strip())
         
-    # Dynamic price filter (exact match within budget + 5% buffer for edge cases)
+    # Keep a small consideration band for a potentially much better option just
+    # above budget. It is labelled below, never presented as in-budget.
     if max_price and max_price > 0:
         conditions.append("price_clean > 0 AND price_clean <= ?")
         params.append(max_price * 1.05)
@@ -252,31 +256,6 @@ def search_products(
     
     status = "exact_match"
     sql_used = sql
-    fallback_params = []
-    
-    # If exact budget filtering returned 0 results, execute budget fallback query to suggest nearest upgrades
-    if not rows and max_price and max_price > 0:
-        status = "budget_fallback"
-        sql_fallback = "SELECT * FROM all_products WHERE price_clean > ?"
-        fallback_params.append(max_price)
-        if category and category.strip():
-            sql_fallback += " AND category = ?"
-            fallback_params.append(category.strip())
-        if brand and brand.strip():
-            sql_fallback += " AND LOWER(brand) = LOWER(?)"
-            fallback_params.append(brand.strip())
-        sql_fallback += " ORDER BY price_clean ASC LIMIT 10"
-        cursor.execute(sql_fallback, fallback_params)
-        rows = cursor.fetchall()
-        sql_used = sql_fallback
-        
-        # If even with brand/category filter no fallback rows found, drop brand constraint
-        if not rows and brand and category:
-            sql_fallback2 = "SELECT * FROM all_products WHERE price_clean > ? AND category = ? ORDER BY price_clean ASC LIMIT 10"
-            cursor.execute(sql_fallback2, [max_price, category.strip()])
-            rows = cursor.fetchall()
-            sql_used = sql_fallback2
-            fallback_params = [max_price, category.strip()]
 
     conn.close()
     
@@ -287,24 +266,23 @@ def search_products(
     results = []
     for r in rows:
         prod = dict(r)
+        prod["_over_budget"] = bool(
+            max_price and max_price > 0 and float(prod.get("price_clean") or 0) > max_price
+        )
         prod["_score"] = score_product(prod, query, priority_features)
         # Normalize fields for UI transparency table
         prod["name"] = f"Model {prod.get('model_code') or prod.get('sku', 'N/A')} - {prod.get('brand', '')}" if prod.get('model_code') or prod.get('sku') else str(prod.get('key_specs_summary', 'Sản phẩm'))
         prod["price"] = prod.get("price_clean") or 0
         results.append(prod)
         
-    # If exact match, sort by semantic score descending, then price ascending
-    # If budget_fallback, sort primarily by price ascending so cheapest/closest options come first
-    if status == "budget_fallback":
-        results.sort(key=lambda x: (float(x.get("price_clean") or 999999999), -x["_score"]))
-    else:
-        results.sort(key=lambda x: (x["_score"], -float(x.get("price_clean") or 0)), reverse=True)
+    # Deterministic tie-breaker keeps equally relevant products reproducible.
+    results.sort(key=lambda x: (-x["_score"], float(x.get("price_clean") or 0)))
         
     top_items = results[:top_k]
     
     # Format sql query string for UI display
     display_sql = sql_used
-    display_params = fallback_params if status == "budget_fallback" else params
+    display_params = params
     for p in display_params:
         if isinstance(p, str):
             display_sql = display_sql.replace("?", f"'{p}'", 1)

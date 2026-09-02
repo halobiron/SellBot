@@ -15,6 +15,16 @@ def test_build_cards_titles():
     assert len(cards) == 2
 
 
+def test_build_cards_marks_product_over_customer_budget():
+    rows = _rows()
+    rows[0]["_over_budget"] = True
+
+    card = build_cards(rows, [])[0]
+
+    assert any(line.label == "Ngân sách" and line.value == "Vượt ngân sách khách đặt ra"
+               for line in card.lines)
+
+
 def test_generate_blocking_grounded():
     llm = FakeLLM(text_responses=["Máy Toshiba giá 12.400.000đ, dung tích 300 lít, rất phù hợp."])
     cards = build_cards(_rows(), [])

@@ -128,6 +128,9 @@ def build_reco_card(row: Dict[str, Any], priority_features: List[str], self_term
         lines.append(FactLine(label="Giá", value=format_vnd(int(price)), source="catalog"))
     else:
         missing.append("giá")
+    if row.get("_over_budget"):
+        lines.append(FactLine(label="Ngân sách", value="Vượt ngân sách khách đặt ra",
+                              source="đối chiếu với yêu cầu khách"))
     lines.append(FactLine(label="Thương hiệu", value=row.get("brand") or "N/A", source="catalog"))
     if row.get("url"):
         lines.append(FactLine(label="Link sản phẩm", value=str(row["url"]), source="catalog"))

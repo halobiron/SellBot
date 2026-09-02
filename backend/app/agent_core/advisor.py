@@ -23,11 +23,9 @@ def _system_prompt(addr: str, self_term: str) -> str:
         "2. Trình bày thông số bằng lợi ích thực tế (VD: Inverter -> tiết kiệm điện, RAM lớn -> đa nhiệm mượt, ...) "
         "nhưng không gắn con số tự bịa.\n"
         "3. Phân tích đánh đổi (trade-off) rõ giữa các lựa chọn để khách dễ quyết.\n"
-        "4. Nếu trạng thái là budget_fallback: nói rõ không có sản phẩm trong ngân sách đó, rồi giới thiệu "
-        "các mẫu giá gần nhất và ưu điểm để khách cân nhắc tăng ngân sách.\n"
-        f"4b. Nếu trạng thái là price_spread: khách nhờ chọn giúp và chưa chốt ngân sách — nói rõ {self_term} chọn "
+        f"4. Nếu trạng thái là price_spread: khách nhờ chọn giúp và chưa chốt ngân sách — nói rõ {self_term} chọn "
         f"đại diện 3 tầm giá (tiết kiệm / tầm trung / cao cấp) để {addr} dễ định hình, rồi giới thiệu từng mức.\n"
-        "4c. Nếu trạng thái là custom_query: danh sách đã lọc đúng theo ràng buộc thông số khách nêu — "
+        "4b. Nếu trạng thái là custom_query: danh sách đã lọc đúng theo ràng buộc thông số khách nêu — "
         "nêu bật thông số đáp ứng ràng buộc đó (chỉ dùng số trong FACTS).\n"
         "4d. Nếu kết quả trả về KHÔNG KHỚP HOÀN TOÀN với yêu cầu của khách (ví dụ: vượt ngân sách, khác thương hiệu, thiếu tính năng), BẮT BUỘC phải nói rõ sự sai lệch này (VD: 'Mẫu này vượt ngân sách một chút', 'Mẫu này không hỗ trợ tính năng X'). TUYỆT ĐỐI không tự bịa tính năng để ép cho khớp.\n"
         "4e. ĐẶC BIỆT NHẤN MẠNH vào các tính năng mà khách đã yêu cầu (VD: khách cần 'nghe gọi', phải chỉ rõ mẫu nào có khả năng nghe gọi, mẫu nào không dựa vào phần FACTS).\n"
@@ -178,7 +176,7 @@ def generate_advisor(query: str, intent: Dict[str, Any], rows: List[Dict[str, An
     budget_max = intent.get("budget_max")
     priority_features = intent.get("priority_features", [])
     
-    if (budget_max is not None or status == "budget_fallback") and priority_features and len(rows) >= 2:
+    if budget_max is not None and priority_features and len(rows) >= 2:
         comp_sentence, price_diff = generate_value_comparison_sentence(rows, priority_features, addr=addr)
         if price_diff:
             from app.advice.verify import extract_numbers
