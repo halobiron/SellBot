@@ -4,7 +4,6 @@ import re
 import json
 import sqlite3
 import pandas as pd
-import openpyxl
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
