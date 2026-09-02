@@ -2,8 +2,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, TypedDict
 
-from app.agent_core.intent import (IntentServiceUnavailableError, extract_intent, has_enough_slots, kw_declines, kw_policy,
-                                   is_off_topic_request, is_programming_request)
+from app.agent_core.intent import IntentServiceUnavailableError, extract_intent, has_enough_slots
 from app.agent_core.policy import answer_policy
 from app.agent_core.retriever import (search_products, price_spread_products, get_catalog_metadata,
                                        category_table_for, hydrate_rows)
@@ -89,13 +88,6 @@ def intent_node(state: AgentState, config) -> AgentState:
         history = history + [{"role": "user", "content": query}]
         return {"intent": {"service_unavailable": True}, "history": history,
                 "customer_addr": customer_addr}
-    # Lưới dự phòng: keyword bắt được từ chối thì tin, kể cả khi LLM bỏ sót.
-    if kw_declines(query):
-        intent["declines_more_info"] = True
-    # Lưới dự phòng chính sách: chỉ khi không dính nhu cầu sản phẩm nào (tránh cướp
-    # câu hỏi bảo hành/trả góp của một sản phẩm cụ thể đang tư vấn).
-    if kw_policy(query) and not intent.get("category"):
-        intent["is_policy_question"] = True
     log.info("intent_node: query=%r -> category=%r budget_max=%s brand=%r feats=%s "
              "assumptions=%s declines=%s needs_clarification=%s meta=%s",
              query, intent.get("category"), intent.get("budget_max"), intent.get("brand"),
@@ -234,12 +226,6 @@ def _digital_suggestions(categories: List[str], limit: int) -> List[str]:
     return [cat for cat in _DIGITAL_CATEGORIES if cat in categories][:limit]
 
 
-def _off_topic_suggestions(query: str, categories: List[str]) -> List[str]:
-    if is_programming_request(query):
-        return _digital_suggestions(categories, 3)
-    return categories[:3]
-
-
 def _has_shopping_pivot(reply: str, categories: List[str]) -> bool:
     flat = reply.lower()
     signals = ("tư vấn", "mua sắm", "sản phẩm", "thiết bị", "đang cần tìm", "quan tâm nhóm")
@@ -255,44 +241,24 @@ def _knowledge_pivot(categories: List[str], addr: str, self_term: str) -> str:
             f"{addr} muốn xem nhóm nào ạ?")
 
 
-def _off_topic_redirect(query: str, config, addr: str, self_term: str) -> str:
-    """Từ chối ngắn gọn và chuyển hướng; không phát sinh thêm LLM call/token."""
-    categories = get_catalog_metadata(_cfg(config, "db_path"))["categories"]
-    suggestions = _off_topic_suggestions(query, categories)
-    labels = ", ".join(f"**{cat}**" for cat in suggestions)
-    if is_programming_request(query) and labels:
-        return (f"Dạ, {self_term} chuyên tư vấn sản phẩm nên không hỗ trợ viết code chi tiết ạ. "
-                f"Nếu {addr} cần thiết bị để học hoặc lập trình, bên {self_term} có {labels}. "
-                f"{addr.capitalize()} muốn xem nhóm nào ạ?")
-    if labels:
-        return (f"Dạ, phần này nằm ngoài phạm vi tư vấn của {self_term} ạ. "
-                f"Nếu {addr} đang cần mua sắm, bên {self_term} có thể tư vấn {labels}. "
-                f"{addr.capitalize()} quan tâm nhóm nào ạ?")
-    return (f"Dạ, phần này nằm ngoài phạm vi tư vấn của {self_term} ạ. "
-            f"{addr.capitalize()} đang cần tìm sản phẩm nào?")
-
-
 def chitchat_node(state: AgentState, config) -> AgentState:
     """Xã giao dùng lời AI; ngoài chủ đề trả mẫu ngắn và quay về mua sắm."""
     intent = state.get("intent", {})
     query = state.get("query", "")
     addr = _addr(state)
     self_term = _self(state)
-    if is_off_topic_request(query):
-        text = _off_topic_redirect(query, config, addr, self_term)
-    else:
-        reply = (intent.get("smalltalk_reply") or "").strip()
-        if reply:
-            # Không có fact card nào để truy nguồn -> câu đáp không được chứa số liệu lạ.
-            result = verify_advice(AdviceResult(message=reply, cards=[], assumptions=[], warnings=[]))
-            if not is_grounded(result):
-                log.warning("chitchat: câu đáp AI dính số lạ -> dùng câu mặc định")
-                reply = ""
-        text = reply or _chitchat_fallback(addr, self_term)
-        if reply:
-            categories = get_catalog_metadata(_cfg(config, "db_path"))["categories"]
-            if not _has_shopping_pivot(reply, categories):
-                text = f"{reply} {_knowledge_pivot(categories, addr, self_term)}"
+    reply = (intent.get("smalltalk_reply") or "").strip()
+    if reply:
+        # Không có fact card nào để truy nguồn -> câu đáp không được chứa số liệu lạ.
+        result = verify_advice(AdviceResult(message=reply, cards=[], assumptions=[], warnings=[]))
+        if not is_grounded(result):
+            log.warning("chitchat: câu đáp AI dính số lạ -> dùng câu mặc định")
+            reply = ""
+    text = reply or _chitchat_fallback(addr, self_term)
+    if reply:
+        categories = get_catalog_metadata(_cfg(config, "db_path"))["categories"]
+        if not _has_shopping_pivot(reply, categories):
+            text = f"{reply} {_knowledge_pivot(categories, addr, self_term)}"
     log.info("chitchat_node: reply=%r", text[:80])
     history = state.get("history", []) + [{"role": "assistant", "content": text}]
     return {"response": text, "stage": "collecting", "question": None,
@@ -469,8 +435,11 @@ def retrieval_node(state: AgentState, config) -> AgentState:
     intent = state.get("intent", {})
     res = None
     if (intent.get("declines_more_info") and intent.get("category")
-            and not intent.get("budget_max") and not intent.get("is_meta_inquiry")):
-        # Khách nhờ chọn giúp, chưa chốt ngân sách -> 3 đại diện rẻ/trung/cao thay vì top điểm.
+            and not intent.get("budget_max") and not intent.get("priority_features")
+            and not intent.get("is_meta_inquiry")):
+        # Chỉ phân tầng giá khi khách thật sự không nêu tiêu chí nào ngoài ngành hàng.
+        # Nếu đã có ràng buộc (vd nhà 4 người), phải để SQL agent lọc theo thông số;
+        # không được đưa mẫu rẻ nhất toàn ngành vào danh sách chỉ để minh họa giá.
         res = price_spread_products(intent["category"], db_path=_cfg(config, "db_path"))
     elif not intent.get("is_meta_inquiry") and _cfg(config, "llm") is not None:
         # Đường chính cho MỌI truy vấn tìm hàng (đơn giản lẫn ràng buộc thông số):

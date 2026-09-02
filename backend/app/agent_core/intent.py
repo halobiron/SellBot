@@ -1,123 +1,9 @@
 import logging
-import re
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from app.agent_core.retriever import get_catalog_metadata, get_schema_summary
-from app.agent_core.text import strip_accents
 
 log = logging.getLogger("agent_core")
-
-# Lưới dự phòng nhận diện khách từ chối (khi LLM chết); đường chính là ô
-# declines_more_info do LLM điền — hiểu được cả cách nói không có trong list.
-_DECLINE_KW = ["goi y dai", "cu goi y", "goi y luon", "gi cung duoc", "sao cung duoc",
-               "tuy em", "tuy ban", "khong biet", "chua biet", "tu van dai",
-               "chon giup", "chon dai", "khoi hoi"]
-
-
-def kw_declines(query: str) -> bool:
-    flat = strip_accents(query.lower())
-    return any(k in flat for k in _DECLINE_KW)
-
-
-# Lưới dự phòng nhận diện câu hỏi chính sách/vận hành cửa hàng (khi LLM chết hoặc bỏ sót).
-_POLICY_KW = ["gio mo cua", "gio dong cua", "may gio mo", "may gio dong", "mo cua luc",
-              "gio hoat dong", "tong dai", "hotline", "so dien thoai cua shop",
-              "khieu nai", "hoan tien", "doi tra", "tra hang", "cach dat hang",
-              "dat hang online", "mua online", "thanh toan", "tra gop", "cod",
-              "phi giao hang", "phi van chuyen", "chinh sach", "noi quy", "quy che",
-              "dia chi cua hang", "dia chi shop", "cua hang o dau", "shop o dau",
-              "du lieu ca nhan", "thong tin ca nhan", "bao mat thong tin", "quyen rieng tu",
-              "xoa du lieu", "xoa thong tin", "xoa tai khoan", "thu thap du lieu",
-              "thu thap thong tin", "chia se du lieu", "chia se thong tin", "lo thong tin",
-              "rut lai su dong y", "luu thong tin", "luu du lieu",
-              "phi lap dat", "lap dat mien phi", "cong lap dat", "phi ship", "mien phi ship",
-              "giao bao lau", "giao trong bao lau", "bao lau nhan hang", "may gio giao",
-              "thoi gian giao", "hu gi doi nay", "1 doi 1", "mot doi mot", "phi doi",
-              "phi tra hang", "ve sinh may lanh", "thay pin", "thay loi loc"]
-
-
-def kw_policy(query: str) -> bool:
-    flat = strip_accents(query.lower())
-    # So khớp cả cụm theo ranh giới từ. Dùng substring khiến keyword "cod"
-    # khớp nhầm chữ "code" và đẩy yêu cầu lập trình vào policy_node.
-    return any(
-        re.search(r"(?<!\w)" + re.escape(keyword) + r"(?!\w)", flat) is not None
-        for keyword in _POLICY_KW
-    )
-
-
-# Một số mặt hàng phổ biến không nằm trong catalog nhưng thường xuất hiện trong
-# hội thoại hoặc tài liệu chính sách nguồn. Danh sách này chỉ là lưới an toàn khi
-# LLM intent không điền unsupported_product; category hợp lệ do catalog cung cấp
-# vẫn luôn được ưu tiên.
-_KNOWN_UNSUPPORTED_PRODUCTS = (
-    ("tivi", ("tivi", "ti vi", "tv")),
-    ("điện thoại", ("dien thoai", "smartphone", "smart phone")),
-    ("nồi cơm điện", ("noi com dien",)),
-    ("dàn âm thanh", ("dan am thanh",)),
-    ("bếp gas", ("bep gas",)),
-    ("bếp điện", ("bep dien",)),
-    ("camera", ("camera",)),
-    ("quạt trần", ("quat tran",)),
-    ("máy lọc nước", ("may loc nuoc",)),
-    ("xe đạp", ("xe dap",)),
-    ("máy bơm nước", ("may bom nuoc",)),
-    ("ổn áp", ("on ap",)),
-    ("bộ lưu điện", ("bo luu dien",)),
-    ("bồn nước", ("bon nuoc",)),
-)
-
-_PHONE_NON_PRODUCT_CONTEXTS = (
-    "so dien thoai", "goi dien thoai", "qua dien thoai", "bang dien thoai",
-    "lien he dien thoai", "dien thoai lien he", "dien thoai cua shop",
-    "dien thoai shop", "dien thoai cua cua hang", "hotline",
-)
-
-_PROGRAMMING_REQUEST_KW = (
-    "code cho", "code file", "code c++", "viet code", "viet chuong trinh",
-    "tao file c++", "sua code", "debug code", "hello world",
-)
-_OTHER_OFF_TOPIC_KW = (
-    "viet tho", "ke chuyen", "dich van ban", "giai bai tap",
-)
-_SHOPPING_SIGNALS = (
-    "muon mua", "can mua", "tim mua", "tu van", "gia bao nhieu", "san pham nao",
-    "loai nao", "may nao",
-)
-
-
-def _has_phrase(text: str, phrase: str) -> bool:
-    return re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", text) is not None
-
-
-def is_programming_request(query: str) -> bool:
-    flat = strip_accents(query.lower())
-    return any(keyword in flat for keyword in _PROGRAMMING_REQUEST_KW)
-
-
-def is_off_topic_request(query: str) -> bool:
-    """Yêu cầu hành động/kiến thức, không phải một mặt hàng khách muốn mua."""
-    flat = strip_accents(query.lower())
-    if any(signal in flat for signal in _SHOPPING_SIGNALS):
-        return False
-    return is_programming_request(query) or any(k in flat for k in _OTHER_OFF_TOPIC_KW)
-
-
-def detect_known_unsupported_product(query: str, categories: List[str]) -> Optional[str]:
-    """Nhận diện dự phòng mặt hàng ngoài catalog, không nhầm số điện thoại/liên hệ."""
-    flat = strip_accents(query.lower())
-
-    # Nếu khách gọi đúng tên category thật (vd "Micro thu âm điện thoại") thì
-    # tuyệt đối không cắt riêng chữ "điện thoại" thành hàng unsupported.
-    if any(_has_phrase(flat, strip_accents(cat.lower())) for cat in categories):
-        return None
-
-    for canonical, aliases in _KNOWN_UNSUPPORTED_PRODUCTS:
-        if canonical == "điện thoại" and any(ctx in flat for ctx in _PHONE_NON_PRODUCT_CONTEXTS):
-            continue
-        if any(_has_phrase(flat, alias) for alias in aliases):
-            return canonical
-    return None
 
 
 def normalize_intent_scope(intent: Dict[str, Any], query: str,
@@ -127,32 +13,11 @@ def normalize_intent_scope(intent: Dict[str, Any], query: str,
     by_lower = {cat.lower(): cat for cat in categories}
     category = str(out.get("category") or "").strip()
     unsupported = str(out.get("unsupported_product") or "").strip()
-    detected = detect_known_unsupported_product(query, categories)
-
-    # "Viết code C++" là yêu cầu ngoài chủ đề, không phải mặt hàng tên
-    # "code C++". Nhánh hội thoại sẽ từ chối ngắn và dẫn về mua sắm.
-    if is_off_topic_request(query):
-        out["category"] = None
-        out["unsupported_product"] = None
-        out["related_categories"] = []
-        out["is_policy_question"] = False
-        out["is_meta_inquiry"] = False
-        out["is_chitchat"] = True
-        out["needs_clarification"] = False
-        out["clarification_questions"] = []
-        return out
-
     if unsupported:
         # Schema quy định hai trường loại trừ nhau; hàng unsupported phải thắng
         # một category gần đúng mà LLM có thể đồng thời điền nhầm.
         out["category"] = None
         out["unsupported_product"] = unsupported
-    elif detected and (not category or not out.get("transition_message")):
-        # Mặt hàng được gọi tên ở câu hiện tại phải thắng category kế thừa từ
-        # lịch sử. Ngoại lệ duy nhất là LLM chủ động ánh xạ sang một giải pháp
-        # catalog và có transition_message giải thích phép thay thế đó.
-        out["category"] = None
-        out["unsupported_product"] = detected
     elif category:
         canonical = by_lower.get(category.lower())
         if canonical:
@@ -164,7 +29,7 @@ def normalize_intent_scope(intent: Dict[str, Any], query: str,
             out["unsupported_product"] = category
     else:
         out["category"] = None
-        out["unsupported_product"] = detected
+        out["unsupported_product"] = None
 
     valid = set(categories)
     out["related_categories"] = [
@@ -197,7 +62,7 @@ class IntentSchema(BaseModel):
     )
     smalltalk_reply: Optional[str] = Field(
         default=None,
-        description="Với xã giao hoặc câu hỏi kiến thức ngắn: trả lời trực tiếp, tối đa 2 câu/60 từ và kết thúc bằng một câu chuyển nhẹ về nhu cầu mua sắm. Với yêu cầu tạo nội dung như viết code, để null."
+        description="Với xã giao, câu hỏi kiến thức ngắn hoặc yêu cầu ngoài mua sắm: trả lời tối đa 2 câu/60 từ và kết thúc bằng một câu chuyển nhẹ về nhu cầu mua sắm. Với yêu cầu tạo nội dung như viết code, từ chối ngắn và gợi ý 1-3 danh mục CÓ TRONG CSDL liên quan nhu cầu (nếu có)."
     )
     category: Optional[str] = Field(
         default=None,
@@ -290,7 +155,8 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
             "trong CSDL gần với nhu cầu đó nhất.\n"
             "- unsupported_product CHỈ dùng cho MẶT HÀNG hữu hình khách muốn mua nhưng catalog không có.\n"
             "- Yêu cầu tạo nội dung/thực hiện tác vụ ngoài mua sắm (viết code, dịch, giải bài tập): "
-            "is_chitchat=true, unsupported_product=null, smalltalk_reply=null; hệ thống sẽ chuyển hướng ngắn.\n"
+            "is_chitchat=true, unsupported_product=null; BẮT BUỘC điền smalltalk_reply từ chối ngắn "
+            "và gợi ý 1-3 danh mục CÓ TRONG CSDL liên quan nếu có.\n"
             "- Câu hỏi kiến thức ngắn ngoài mua sắm (VD 'kinh tế chính trị là gì?'): "
             "is_chitchat=true và BẮT BUỘC điền smalltalk_reply trả lời đúng trọng tâm, tối đa 2 câu/60 từ; "
             "không gọi đó là sản phẩm, không giảng giải dài và BẮT BUỘC kết bằng một câu chuyển nhẹ "
@@ -307,6 +173,13 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
             "- needs_custom_query=true khi khách ràng buộc theo THÔNG SỐ hoặc cách xếp hạng đặc biệt "
             "(dung tích/kích thước/số cửa/'ít tốn điện nhất'/'nhẹ nhất'...) — lọc cơ bản ngành+giá+hãng "
             "không đáp ứng được.\n"
+            "- Số người sử dụng là một ràng buộc thông số: khi khách nói 'nhà 4 người' hoặc tương tự, "
+            "BẮT BUỘC ghi vào priority_features và đặt needs_custom_query=true, kể cả khi khách nói "
+            "'khác gì cũng được'. Câu đó chỉ có nghĩa là không chốt thêm tiêu chí/ngân sách, không được "
+            "bỏ qua số người đã nêu.\n"
+            "- Nếu khách mới nêu ngành hàng và số người sử dụng nhưng CHƯA nêu ngân sách, và không nói "
+            "'khác gì cũng được'/'chọn đại': đặt needs_clarification=true và hỏi ngân sách. Không tự chọn "
+            "sản phẩm chỉ từ số người sử dụng.\n"
             "- is_policy_question=true khi khách hỏi về CHÍNH SÁCH/VẬN HÀNH cửa hàng: giờ mở/đóng cửa, "
             "tổng đài/cách liên hệ, địa chỉ, cách đặt hàng online, thời gian/phí giao hàng, phí lắp đặt "
             "và vật tư, dịch vụ vệ sinh/sửa chữa, hình thức thanh toán/trả góp, hoàn tiền, phí đổi trả "
@@ -339,6 +212,10 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
 
 def has_enough_slots(intent: Dict[str, Any]) -> bool:
     """Thông tin tối thiểu để tiến hành tìm kiếm mà không cần hỏi thêm."""
+    # Đây là quyết định ngữ cảnh của LLM. Một priority_features đơn lẻ không được
+    # phép vô hiệu hoá yêu cầu làm rõ mà LLM vừa trả về.
+    if intent.get("needs_clarification"):
+        return False
     cat = intent.get("category")
     budget = intent.get("budget_max")
     brand = intent.get("brand")

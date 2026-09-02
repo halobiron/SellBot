@@ -102,20 +102,16 @@ def hydrate_rows(rows: List[Dict[str, Any]], db_path: Optional[str] = None) -> L
     """Đổi kết quả tool SQL về dòng all_products chuẩn (có price_clean/full_specs_json cho
     fact card), giữ nguyên thứ tự. Nối bằng cột id (duy nhất) khi có; model_code KHÔNG duy
     nhất (biến thể chung mã) nên chỉ là đường lui khi truy từ bảng ngành."""
-    ids = [r.get("id") for r in rows if r.get("id") is not None]
     codes = [str(r.get("model_code") or "").strip() for r in rows]
+    ids = [r.get("id") for r in rows if r.get("id") is not None]
     conn = sqlite3.connect(_resolve_db(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        if ids:
-            marks = ",".join("?" * len(ids))
-            got = {r["id"]: dict(r) for r in conn.execute(
-                f"SELECT * FROM all_products WHERE id IN ({marks})", ids)}
-            ordered = [got[i] for i in ids if i in got]
-        else:
-            codes = [c for c in codes if c]
-            if not codes:
-                return []
+        # Kết quả từ bảng chuyên ngành cũng có cột ``id``, nhưng đó KHÔNG phải id
+        # của all_products. model_code là khoá liên kết an toàn đã được SQL tool yêu
+        # cầu trả về, nên luôn ưu tiên nó; chỉ dùng id khi truy vấn thực sự không có mã.
+        codes = [c for c in codes if c]
+        if codes:
             marks = ",".join("?" * len(codes))
             got = {}
             for r in conn.execute(f"SELECT * FROM all_products WHERE model_code IN ({marks})", codes):
@@ -126,6 +122,13 @@ def hydrate_rows(rows: List[Dict[str, Any]], db_path: Optional[str] = None) -> L
                 if c in got and c not in seen:
                     ordered.append(got[c])
                     seen.add(c)
+        elif ids:
+            marks = ",".join("?" * len(ids))
+            got = {r["id"]: dict(r) for r in conn.execute(
+                f"SELECT * FROM all_products WHERE id IN ({marks})", ids)}
+            ordered = [got[i] for i in ids if i in got]
+        else:
+            return []
     finally:
         conn.close()
     out = []

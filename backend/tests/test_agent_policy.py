@@ -1,4 +1,3 @@
-from app.agent_core.intent import kw_policy
 from app.agent_core.policy import (load_policy_chunks, search_policy, answer_policy,
                                    _numbers_grounded)
 from tests.agent_helpers import make_db
@@ -206,18 +205,3 @@ def test_policy_node_defends_against_unsupported_product(tmp_path):
     assert "chưa kinh doanh tivi" in out["response"]
     assert "xe đạp" not in out["response"].lower()
 
-
-# --- Intent fallback ------------------------------------------------------
-
-def test_kw_policy_detects_policy_questions():
-    assert kw_policy("shop mấy giờ mở cửa?")
-    assert kw_policy("cho hỏi tổng đài liên hệ")
-    assert kw_policy("chính sách hoàn tiền thế nào")
-    assert kw_policy("shop có thu thập thông tin cá nhân không")
-    assert kw_policy("làm sao để xóa dữ liệu của tôi")
-    assert kw_policy("giao trong bao lâu thì tới")
-    assert kw_policy("có tính phí lắp đặt không")
-    assert kw_policy("hư gì đổi nấy là sao")
-    assert kw_policy("shop có hỗ trợ thanh toán COD không")
-    assert not kw_policy("mua tủ lạnh 15 triệu")
-    assert not kw_policy("hãy code cho tôi file C++")

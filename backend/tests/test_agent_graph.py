@@ -67,22 +67,16 @@ def test_intent_service_error_returns_a_generic_unavailable_reply(tmp_path):
     assert "dịch vụ tư vấn đang bận" in out["reply"]
 
 
-def test_general_household_request_can_recommend_without_budget_when_llm_has_context(tmp_path):
-    # Ngân sách không phải gate cứng. Khi intent đã có ngành hàng và LLM đánh giá
-    # bối cảnh đủ để bắt đầu, agent tư vấn trước rồi mới có thể tinh chỉnh giá ở
-    # lượt sau.
+def test_general_household_request_asks_for_budget_before_recommending(tmp_path):
     llm = FakeLLM(json_responses=[{
         "category": "Tủ Lạnh", "budget_max": None, "brand": None,
-        "priority_features": ["gia đình 4 người"], "needs_clarification": False,
+        "priority_features": ["gia đình 4 người"], "needs_clarification": True,
         "is_meta_inquiry": False, "clarification_questions": [],
     }])
     out = AgentCoreEngine(llm=llm, db_path=_db(tmp_path)).handle(
         "household-size", "tôi muốn mua tủ lạnh cho nhà 4 người")
-    assert out["stage"] == "recommended"
-    assert out["recommendation"] is not None
-    assert len(out["recommendation"]["cards"]) >= 2
-
-
+    assert out["stage"] == "collecting"
+    assert out["recommendation"] is None
 def test_detail_followup_uses_memory(tmp_path):
     db = _db(tmp_path)
     eng = AgentCoreEngine(llm=_reco_llm(), db_path=db)
@@ -111,8 +105,9 @@ def test_reset_clears_memory(tmp_path):
 def test_code_request_is_briefly_redirected_without_extra_llm_call(tmp_path):
     db = _digital_db(tmp_path)
     llm = FakeLLM(
-        json_responses=[{"category": None, "unsupported_product": "code C++",
-                         "is_chitchat": False, "needs_clarification": False}])
+        json_responses=[{"category": None, "unsupported_product": None,
+                         "is_chitchat": True, "needs_clarification": False,
+                         "smalltalk_reply": "Dạ, em không hỗ trợ viết code chi tiết ạ. Nếu anh/chị cần thiết bị để lập trình, em có thể tư vấn Máy tính để bàn hoặc Màn hình máy tính."}])
     eng = AgentCoreEngine(llm=llm, db_path=db)
     out = eng.handle("code-off-topic", "hãy code cho tôi file C++ ra dòng Hello World")
     assert "chưa kinh doanh code" not in out["reply"].lower()
@@ -120,8 +115,6 @@ def test_code_request_is_briefly_redirected_without_extra_llm_call(tmp_path):
     assert "Hello World" not in out["reply"]
     assert "#include" not in out["reply"]
     assert "Máy tính để bàn" in out["reply"]
-    assert "Màn hình máy tính" in out["reply"]
-    assert "muốn xem nhóm nào" in out["reply"]
     assert len(llm.calls) == 1  # chỉ intent JSON, không gọi LLM lần hai để sinh code
 
 

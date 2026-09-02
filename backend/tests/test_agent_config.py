@@ -1,5 +1,5 @@
 from app.config import Settings
-from app.agent_core.retriever import search_products, get_catalog_metadata
+from app.agent_core.retriever import search_products, get_catalog_metadata, hydrate_rows
 from tests.agent_helpers import make_db
 
 
@@ -23,3 +23,15 @@ def test_metadata_lists_categories(tmp_path):
     make_db(db, [{"category": "Máy giặt", "brand": "LG", "price_clean": 9_000_000, "specs": {}}])
     meta = get_catalog_metadata(db)
     assert "Máy giặt" in meta["categories"]
+
+
+def test_hydrate_prefers_model_code_over_foreign_category_table_id(tmp_path):
+    db = str(tmp_path / "t.db")
+    make_db(db, [
+        {"category": "Tủ Lạnh", "brand": "A", "model_code": "wrong", "price_clean": 0, "specs": {}},
+        {"category": "Tủ Lạnh", "brand": "B", "model_code": "right", "price_clean": 12_000_000, "specs": {}},
+    ])
+    # id=1 mô phỏng id của bảng ngành; nó không được dùng để hydrate model "right".
+    rows = hydrate_rows([{"id": 1, "model_code": "right"}], db)
+    assert rows[0]["model_code"] == "right"
+    assert rows[0]["price_clean"] == 12_000_000

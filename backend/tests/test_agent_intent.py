@@ -47,13 +47,16 @@ def test_has_enough_slots():
                              "priority_features": [], "needs_clarification": False}) is True
     assert has_enough_slots({"category": None, "budget_max": None, "brand": None,
                              "priority_features": [], "needs_clarification": True}) is False
+    assert has_enough_slots({"category": "Tủ Lạnh", "budget_max": None, "brand": None,
+                             "priority_features": ["gia đình 4 người"],
+                             "needs_clarification": True}) is False
 
 
 def test_code_request_is_off_topic_not_unsupported_product(tmp_path):
     db = _db(tmp_path)
     llm = FakeLLM(json_responses=[{
-        "category": None, "unsupported_product": "code C++",
-        "is_chitchat": False, "is_policy_question": False,
+        "category": None, "unsupported_product": None,
+        "is_chitchat": True, "is_policy_question": False,
         "needs_clarification": False,
     }])
     intent = extract_intent("hãy code cho tôi file C++ ra dòng Hello World", [], llm, db)
