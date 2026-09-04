@@ -55,7 +55,8 @@ def shipping_fee_line(category: Optional[str], price: float) -> Optional[tuple[s
 
 
 def closing_hook(category: Optional[str] = None, price: float = 0.0,
-                 addr: str = "anh/chị", self_term: str = "em") -> str:
+                 addr: str = "", self_term: str = "") -> str:
+    del addr, self_term
     hit = shipping_fee_line(category, price)
     if hit:
         fee, is_install = hit
@@ -64,11 +65,11 @@ def closing_hook(category: Optional[str] = None, price: float = 0.0,
         sentences = [f"Về {label}: máy này {fee} ạ."]
         if extra:
             sentences.append(extra)
-        sentences.append(f"Phí thực tế còn tùy địa chỉ, hệ thống báo rõ khi {addr} đặt — "
-                          f"{addr} muốn {self_term} hướng dẫn đặt hàng luôn không ạ?")
+        sentences.append("Phí thực tế còn tùy địa chỉ và sẽ được hiển thị rõ khi đặt hàng. "
+                         "Có cần hướng dẫn đặt hàng không?")
         return " ".join(sentences)
-    return (f"Phí giao hàng/lắp đặt sẽ hiện rõ theo địa chỉ khi {addr} đặt hàng ạ — "
-            f"{addr} muốn {self_term} hướng dẫn đặt hàng luôn không ạ?")
+    return ("Phí giao hàng/lắp đặt sẽ hiện rõ theo địa chỉ khi đặt hàng. "
+            "Có cần hướng dẫn đặt hàng không?")
 
 
 """Bán chéo (cross-sell): khi khách vừa chốt/xem kỹ một máy, gợi ý thêm 1 sản phẩm THẬT
@@ -126,10 +127,11 @@ def cross_sell_suggestion(category: Optional[str], price: float, db_path: Option
     return None
 
 
-def cross_sell_line(row: Dict[str, Any], addr: str = "anh/chị", self_term: str = "em") -> str:
+def cross_sell_line(row: Dict[str, Any], addr: str = "", self_term: str = "") -> str:
     """Câu gợi mở mua kèm, luôn kèm TÊN NGÀNH HÀNG + tên + giá thật lấy từ catalog. Bắt buộc nêu
     ngành hàng vì product_display_name() chỉ trả hãng+mã (VD "Casper 179074"), không tự nói lên
     đây là loại máy gì -> thiếu ngữ cảnh khiến gợi ý trông như sản phẩm không liên quan."""
+    del addr, self_term
     from app.agent_core.presenters import product_display_name
     from app.advice.provenance import format_vnd
     name = product_display_name(row)
@@ -137,8 +139,8 @@ def cross_sell_line(row: Dict[str, Any], addr: str = "anh/chị", self_term: str
     label = f"{category} {name}" if category and category.lower() not in name.lower() else name
     price = float(row.get("price_clean") or 0)
     price_txt = format_vnd(int(price)) if price > 0 else "chưa có dữ liệu giá"
-    return (f"Nhân tiện, nhiều khách hay mua kèm {label} (giá {price_txt}, nguồn: catalog) để "
-            f"dùng chung combo tiện hơn — {addr} có muốn {self_term} giới thiệu thêm không ạ?")
+    return (f"Có thể xem thêm {label} (giá {price_txt}, nguồn: catalog) để "
+            "dùng chung combo tiện hơn. Có muốn xem thêm không?")
 
 
 # Lưới từ khoá nhận diện khách CHỐT ĐƠN (xác nhận mua) — đường chính để ghi nhận lịch sử mua

@@ -14,7 +14,13 @@ class Settings(BaseSettings):
     # b.ai exposes the OpenAI Chat Completions wire protocol at /v1.
     llm_base_url: str = "https://api.b.ai/v1"
     llm_api_key: str = ""
-    llm_model: str = "deepseek-v4-flash"
+    llm_model: str = "qwen3.8-flash"
+    # Some B.AI models (including qwen3.8-flash) are enabled only on Chat
+    # Completions, while DeepSeek uses Responses for reliable JSON output.
+    llm_json_endpoint: str = "responses"
+    # Qwen3.8 thinks by default; extraction is a short structured task and
+    # should return directly to meet the interactive intent timeout.
+    llm_enable_thinking: bool | None = None
     dataset_path: str = "../Dataset.xlsx"
     catalog_path: str = "./data/catalog.normalized.json"
     # Danh sách origin được phép gọi API (CORS), phân tách bằng dấu phẩy.

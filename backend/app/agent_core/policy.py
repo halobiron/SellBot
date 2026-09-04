@@ -28,12 +28,13 @@ _STOPWORDS = {
 }
 
 def _system_prompt(addr: str, self_term: str) -> str:
+    del addr, self_term
     return (
         "Bạn là nhân viên chăm sóc khách hàng của cửa hàng điện máy. NGUYÊN TẮC:\n"
         "1. CHỈ trả lời dựa trên TÀI LIỆU được cung cấp. TUYỆT ĐỐI không bịa thông tin, "
         "không suy diễn chính sách không có trong tài liệu.\n"
         "2. Mọi con số (giờ giấc, số điện thoại, số ngày, số lượng) phải viết Y HỆT như trong tài liệu.\n"
-        f"3. Nếu tài liệu không có thông tin khách hỏi, nói thật là {self_term} chưa có thông tin phần này "
+        "3. Nếu tài liệu không có thông tin khách hỏi, nói thật là chưa có thông tin phần này "
         "và mời khách gọi tổng đài 1900.232.461 để được hỗ trợ.\n"
         "4. Trả lời ngắn gọn 2-4 câu, giọng lễ phép 'Dạ/ạ', đi thẳng vào ý khách hỏi.\n"
         "4b. Nếu bối cảnh cho biết khách đang hỏi về MỘT nhóm sản phẩm cụ thể (VD tủ lạnh), CHỈ nêu "
@@ -42,7 +43,8 @@ def _system_prompt(addr: str, self_term: str) -> str:
         "không có mục riêng cho nhóm đó, nêu quy định chung áp dụng cho nhóm hàng tương ứng "
         "(VD tủ lạnh thuộc nhóm hàng lắp đặt) và nói rõ đây là quy định chung.\n"
         "5. Kết thúc bằng một câu mời khách tiếp tục cho biết nhu cầu mua sắm nếu cần.\n"
-        f"5b. Xưng '{self_term}' và gọi khách là '{addr}' xuyên suốt câu trả lời (không dùng 'bạn').\n"
+        "5b. Chỉ dùng cách xưng hô khi khách đã thể hiện rõ trong hội thoại. Nếu không chắc, viết trung tính, "
+        "không tự gán tuổi, giới tính hay vai vế.\n"
         "6. KHÔNG dùng định dạng Markdown (không dấu sao hay thăng); danh sách thì xuống dòng dùng dấu '-'."
     )
 
@@ -129,8 +131,8 @@ def _numbers_grounded(reply: str, docs: str) -> bool:
 
 def answer_policy(query: str, llm=None, policy_dir: Optional[str] = None,
                   history: Optional[List[Dict[str, str]]] = None,
-                  category: Optional[str] = None, addr: str = "anh/chị",
-                  self_term: str = "em") -> str:
+                  category: Optional[str] = None, addr: str = "",
+                  self_term: str = "") -> str:
     """Soạn câu trả lời chính sách THEO NGỮ CẢNH hội thoại (nhóm hàng khách đang bàn).
     LLM lỗi/bịa số -> trả nguyên văn chunk khớp nhất."""
     retrieval_query = query
@@ -144,9 +146,9 @@ def answer_policy(query: str, llm=None, policy_dir: Optional[str] = None,
     hits = search_policy(retrieval_query, top_k=3, policy_dir=policy_dir, category=category)
     if not hits:
         log.info("policy: không tìm thấy chunk khớp cho %r", query)
-        return (f"Dạ phần này {self_term} chưa có thông tin chính xác ạ. {addr.capitalize()} vui lòng gọi tổng đài "
+        return ("Hiện chưa có thông tin chính xác cho phần này. Vui lòng gọi tổng đài "
                 "1900.232.461 (7:30 - 22:00 mỗi ngày) để được hỗ trợ chi tiết hơn. "
-                f"Ngoài ra {addr} đang cần tìm sản phẩm nào để {self_term} tư vấn không ạ?")
+                "Nếu cần, hãy cho biết sản phẩm đang tìm để được tư vấn.")
     docs = "\n\n".join(f"[{h['title']}]\n{h['text']}" for h in hits)
     ctx = ""
     if category:
@@ -167,5 +169,5 @@ def answer_policy(query: str, llm=None, policy_dir: Optional[str] = None,
         except Exception as e:
             log.warning("policy: LLM lỗi (%s) -> dùng nguyên văn tài liệu", e)
     best = hits[0]
-    return (f"Dạ về {best['title'].lower()}, bên {self_term} quy định như sau ạ:\n\n{best['text']}\n\n"
-            f"{addr.capitalize()} cần {self_term} hỗ trợ thêm thông tin nào nữa không ạ?")
+    return (f"Về {best['title'].lower()}, quy định hiện có như sau:\n\n{best['text']}\n\n"
+            "Cần thêm thông tin nào khác không?")

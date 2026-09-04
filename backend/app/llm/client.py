@@ -17,12 +17,15 @@ class LLMClient(Protocol):
 
 class DeepSeekClient:
     def __init__(self, base_url: str, api_key: str, model: str,
-                 timeout: float = 60.0, max_tokens: int = 4096):
+                 timeout: float = 60.0, max_tokens: int = 4096,
+                 json_endpoint: str = "responses", enable_thinking: bool | None = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
         self.max_tokens = max_tokens
+        self.json_endpoint = json_endpoint
+        self.enable_thinking = enable_thinking
         # Do not use ssl.create_default_context(): Python automatically honors
         # SSLKEYLOGFILE there. A stale/unwritable key-log path then prevents any
         # HTTPS request from being established. This context still uses the OS
@@ -43,6 +46,8 @@ class DeepSeekClient:
         # Reasoning-capable models may emit reasoning_content separately; it is ignored.
         payload = {"model": self.model, "messages": messages,
                    "temperature": 0.2, "max_tokens": self.max_tokens if max_tokens is None else max_tokens}
+        if self.enable_thinking is not None:
+            payload["enable_thinking"] = self.enable_thinking
         headers = {"Authorization": f"Bearer {self.api_key}"}
         with self._http_client(timeout) as c:
             r = c.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
@@ -118,6 +123,11 @@ class DeepSeekClient:
                       reasoning_effort: str = "low") -> dict:
         sys = system + ("\n\nCHỈ trả về một object JSON hợp lệ, không kèm giải thích hay văn bản thừa."
                         + (f" Schema:\n{schema_hint}" if schema_hint else ""))
+        if self.json_endpoint == "chat_completions":
+            return self._extract_json(self._post(
+                [{"role": "system", "content": sys}, {"role": "user", "content": user}],
+                timeout=timeout, max_tokens=max_tokens,
+            ))
         return self._extract_json(
             self._post_responses_json(sys, user, timeout, max_tokens, reasoning_effort))
 
@@ -132,6 +142,8 @@ class DeepSeekClient:
                    "messages": [{"role": "system", "content": system},
                                 {"role": "user", "content": user}],
                    "temperature": 0.2, "max_tokens": self.max_tokens, "stream": True}
+        if self.enable_thinking is not None:
+            payload["enable_thinking"] = self.enable_thinking
         headers = {"Authorization": f"Bearer {self.api_key}"}
         with httpx.Client(timeout=self.timeout) as c:
             with c.stream("POST", f"{self.base_url}/chat/completions",
@@ -179,4 +191,6 @@ class FakeLLM:
 
 def get_llm() -> LLMClient:
     s = get_settings()
-    return DeepSeekClient(s.llm_base_url, s.llm_api_key, s.llm_model)
+    return DeepSeekClient(s.llm_base_url, s.llm_api_key, s.llm_model,
+                          json_endpoint=s.llm_json_endpoint,
+                          enable_thinking=s.llm_enable_thinking)

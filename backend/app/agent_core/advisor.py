@@ -11,6 +11,7 @@ log = logging.getLogger("agent_core")
 
 
 def _system_prompt(addr: str, self_term: str) -> str:
+    del addr, self_term
     return (
         "Bạn là chuyên gia tư vấn điện máy. NGUYÊN TẮC:\n"
         "1. CHỈ dùng đúng các con số xuất hiện trong FACTS (giá, thông số). TUYỆT ĐỐI không nêu bất kỳ "
@@ -23,15 +24,16 @@ def _system_prompt(addr: str, self_term: str) -> str:
         "2. Trình bày thông số bằng lợi ích thực tế (VD: Inverter -> tiết kiệm điện, RAM lớn -> đa nhiệm mượt, ...) "
         "nhưng không gắn con số tự bịa.\n"
         "3. Phân tích đánh đổi (trade-off) rõ giữa các lựa chọn để khách dễ quyết.\n"
-        f"4. Nếu trạng thái là price_spread: khách nhờ chọn giúp và chưa chốt ngân sách — nói rõ {self_term} chọn "
-        f"đại diện 3 tầm giá (tiết kiệm / tầm trung / cao cấp) để {addr} dễ định hình, rồi giới thiệu từng mức.\n"
+        "4. Nếu trạng thái là price_spread: khách nhờ chọn giúp và chưa chốt ngân sách — giải thích rằng "
+        "các lựa chọn đại diện cho 3 tầm giá (tiết kiệm / tầm trung / cao cấp), rồi giới thiệu từng mức.\n"
         "4b. Nếu trạng thái là custom_query: danh sách đã lọc đúng theo ràng buộc thông số khách nêu — "
         "nêu bật thông số đáp ứng ràng buộc đó (chỉ dùng số trong FACTS).\n"
         "4d. Nếu kết quả trả về KHÔNG KHỚP HOÀN TOÀN với yêu cầu của khách (ví dụ: vượt ngân sách, khác thương hiệu, thiếu tính năng), BẮT BUỘC phải nói rõ sự sai lệch này (VD: 'Mẫu này vượt ngân sách một chút', 'Mẫu này không hỗ trợ tính năng X'). TUYỆT ĐỐI không tự bịa tính năng để ép cho khớp.\n"
         "4e. ĐẶC BIỆT NHẤN MẠNH vào các tính năng mà khách đã yêu cầu (VD: khách cần 'nghe gọi', phải chỉ rõ mẫu nào có khả năng nghe gọi, mẫu nào không dựa vào phần FACTS).\n"
         "4f. Nếu không tìm thấy sản phẩm nào (FACTS trống rỗng), hãy lịch sự xin lỗi khách, giải thích lý do (dựa trên yêu cầu của khách không có trong dữ liệu) và đóng vai một người sale chuyên nghiệp để hỏi gợi mở sang một nhu cầu/tiêu chí khác. TUYỆT ĐỐI KHÔNG đề xuất máy móc khi FACTS trống.\n"
         "5. Giọng chuyên nghiệp, mạch lạc, súc tích, đúng ngữ pháp.\n"
-        f"5b. Xưng '{self_term}' và gọi khách là '{addr}' xuyên suốt câu trả lời (không dùng 'bạn').\n"
+        "5b. Chỉ dùng cách xưng hô khi khách đã thể hiện rõ trong hội thoại. Nếu không chắc, viết câu trung tính, "
+        "không tự gán tuổi, giới tính hay vai vế.\n"
         "6. KHÔNG dùng định dạng Markdown (tuyệt đối không dùng dấu sao `*` hoặc `#` để in đậm/in nghiêng). Để tạo danh sách, hãy xuống dòng và dùng dấu `-` hoặc số `1.` bình thường."
     )
 
@@ -42,22 +44,22 @@ def build_cards(rows: List[Dict[str, Any]], priority_features: List[str],
 
 
 def deterministic_message(intent: Dict[str, Any], status: str, db_path: Optional[str] = None,
-                          addr: str = "anh/chị") -> Optional[str]:
+                          addr: str = "") -> Optional[str]:
     """Copy tất định cho các trạng thái không cần LLM; None nếu cần LLM."""
     if status == "meta_inquiry":
         meta = get_catalog_metadata(db_path)
         cats = ", ".join(f"**{c}**" for c in meta["categories"])
-        return (f"Chào {addr}, hệ thống hiện có **{len(meta['categories'])} danh mục** chính:\n\n{cats}\n\n"
-                f"{addr.capitalize()} quan tâm danh mục nào, ngân sách và tính năng ra sao ạ?")
+        return (f"Hiện có **{len(meta['categories'])} danh mục** chính:\n\n{cats}\n\n"
+                "Cần tư vấn danh mục nào, với ngân sách và tính năng ra sao?")
     if status == "no_products_found":
         category = intent.get("category") or "nhóm sản phẩm này"
-        return (f"Dạ hiện chưa có sản phẩm phù hợp trong dữ liệu cho {category} theo tiêu chí của "
-                f"{addr}. {addr.capitalize()} muốn đổi ngân sách hoặc nới một tiêu chí nào ạ?")
+        return (f"Hiện chưa có sản phẩm phù hợp trong dữ liệu cho {category} theo các tiêu chí đã nêu. "
+                "Có thể đổi ngân sách hoặc nới một tiêu chí để tìm lại.")
     return None
 
 
 def generate_value_comparison_sentence(rows: List[Dict[str, Any]], priority_features: List[str],
-                                       addr: str = "anh/chị") -> Tuple[str | None, float | None]:
+                                       addr: str = "") -> Tuple[str | None, float | None]:
     """
     Sinh câu so sánh giá trị:
     'Với thêm X đồng, {addr} được thêm [tính năng khách ưu tiên] ở mẫu Y'
@@ -135,14 +137,14 @@ def generate_value_comparison_sentence(rows: List[Dict[str, Any]], priority_feat
     features_str = ", ".join(best_features)
     p2_name = product_display_name(p2)
     
-    sentence = f"Với thêm {diff_str}, {addr} được thêm {features_str} ở mẫu {p2_name}."
+    sentence = f"Với thêm {diff_str}, mẫu {p2_name} có thêm {features_str}."
     return sentence, price_diff
 
 
 def generate_advisor(query: str, intent: Dict[str, Any], rows: List[Dict[str, Any]],
                      status: str, llm, cards: List[FactCard],
                      on_delta: Optional[Callable[[str], None]] = None,
-                     addr: str = "anh/chị", self_term: str = "em") -> Tuple[str, bool, List[str]]:
+                     addr: str = "", self_term: str = "") -> Tuple[str, bool, List[str]]:
     """Sinh tư vấn top-3 + trade-off. Trả (message, streamed, warnings). Fail-closed nếu bịa số."""
     det = deterministic_message(intent, status, None, addr=addr)
     if det is not None:
@@ -151,7 +153,7 @@ def generate_advisor(query: str, intent: Dict[str, Any], rows: List[Dict[str, An
 
     facts = facts_for_llm(cards)
     assump = [a for a in (intent.get("assumptions") or []) if a]
-    assump_txt = (f"Giả định của {self_term} (phải nói rõ với khách rằng đây là {self_term} đang giả định): "
+    assump_txt = ("Giả định đang dùng (phải nói rõ với khách rằng đây chỉ là giả định): "
                   f"{'; '.join(assump)}\n" if assump else "")
     transition = intent.get("transition_message")
     trans_txt = f"LỜI CHUYỂN TIẾP (BẮT BUỘC dùng câu này làm câu mở đầu để giải thích sự suy luận): {transition}\n" if transition else ""
@@ -232,7 +234,7 @@ def generate_advisor(query: str, intent: Dict[str, Any], rows: List[Dict[str, An
     return _blocking(llm, system, user, cards, self_term, comp_sentence, extra_allowed_nums, closing_line)
 
 
-def _blocking(llm, system: str, user: str, cards: List[FactCard], self_term: str = "em",
+def _blocking(llm, system: str, user: str, cards: List[FactCard], self_term: str = "",
               comp_sentence: Optional[str] = None,
               extra_allowed_nums: Optional[set[str]] = None, closing_line: Optional[str] = None) -> Tuple[str, bool, List[str]]:
     try:
@@ -263,8 +265,9 @@ def _blocking(llm, system: str, user: str, cards: List[FactCard], self_term: str
     return result.message, False, []
 
 
-def _safe_summary(cards: List[FactCard], self_term: str = "em") -> str:
-    lines = [f"Dạ {self_term} gợi ý các máy sau (thông tin lấy trực tiếp từ catalog):"]
+def _safe_summary(cards: List[FactCard], self_term: str = "") -> str:
+    del self_term
+    lines = ["Các máy dưới đây được gợi ý từ thông tin trực tiếp trong catalog:"]
     for i, c in enumerate(cards, 1):
         price = next((l.value for l in c.lines if l.label == "Giá"), "chưa có dữ liệu")
         # Tiêu đề card có dạng "Vì sao {self_term} đề xuất {name}?" — self_term đổi theo khách.

@@ -12,14 +12,8 @@ const SID = (() => {
   return s
 })()
 
-const GREETING = {
-  id: 'greeting-1',
-  role: 'bot',
-  text: 'Chào anh/chị! Em là trợ lý AI Điện Máy Xanh. Em có thể giúp anh/chị tư vấn chọn máy, so sánh thông số kỹ thuật hoặc tra cứu giá & khuyến mãi.',
-}
-
 export default function App() {
-  const [messages, setMessages] = useState([GREETING])
+  const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState(null)
@@ -61,7 +55,7 @@ export default function App() {
     setMessages((m) => [...m, userMsg])
     setInput('')
     setBusy(true)
-    setStatus('Đang tìm kiếm & xử lý…')
+    setStatus('Đang xử lý yêu cầu…')
 
     let streamed = false
     const botMsgId = 'msg-' + (Date.now() + 1)
@@ -118,7 +112,7 @@ export default function App() {
             {
               id: botMsgId,
               role: 'bot',
-              text: 'Xin lỗi, hệ thống đang bận. Anh/chị thử lại giúp em nhé.',
+              text: 'Hệ thống đang bận. Vui lòng thử lại sau ít phút.',
             },
           ])
         }
@@ -126,7 +120,7 @@ export default function App() {
         const errMsg = {
           id: botMsgId,
           role: 'bot',
-          text: 'Kết nối bị gián đoạn. Anh/chị gửi lại câu hỏi giúp em nhé.',
+          text: 'Kết nối bị gián đoạn. Vui lòng gửi lại câu hỏi.',
         }
         if (streamed) replaceLast(errMsg)
         else setMessages((m) => [...m, errMsg])
@@ -150,12 +144,7 @@ export default function App() {
     } catch {
       /* ignore */
     }
-    setMessages([
-      {
-        ...GREETING,
-        id: 'greeting-' + Date.now(),
-      },
-    ])
+    setMessages([])
     if (inputRef.current) inputRef.current.focus()
   }
 
@@ -220,7 +209,7 @@ export default function App() {
               />
             ))}
 
-            {messages.length === 1 && (
+            {messages.length === 0 && (
               <QuickSuggestions onPick={send} disabled={busy} />
             )}
 

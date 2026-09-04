@@ -11,7 +11,7 @@ def _rows():
 
 def test_build_cards_titles():
     cards = build_cards(_rows(), ["tiết kiệm điện"])
-    assert cards[0].title.startswith("Vì sao em đề xuất")
+    assert cards[0].title.startswith("Lý do đề xuất")
     assert len(cards) == 2
 
 

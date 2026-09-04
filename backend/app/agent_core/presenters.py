@@ -155,7 +155,7 @@ def build_reco_card(row: Dict[str, Any], priority_features: List[str], self_term
     missing.extend(_ALWAYS_MISSING)
 
     meta = _lookup_web_meta(row)
-    card = FactCard(title=f"Vì sao {self_term} đề xuất {name}?", lines=lines, missing=missing,
+    card = FactCard(title=f"Lý do đề xuất {name}", lines=lines, missing=missing,
                     productidweb=meta["productidweb"], image_url=meta["image"],
                     product_link=meta["link"])
     from app.advice.crawler import enrich_card_with_detail

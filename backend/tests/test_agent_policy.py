@@ -205,9 +205,10 @@ def test_policy_node_defends_against_unsupported_product(tmp_path):
     db = _db(tmp_path)
     state = {"query": "tivi thì sao",
              "intent": {"is_policy_question": True, "unsupported_product": "tivi",
-                        "related_categories": []},
+                        "related_categories": [],
+                        "unsupported_reply": "Hiện cửa hàng chưa có tivi. Nếu cần, mình có thể tư vấn một nhóm sản phẩm khác trong catalog."},
              "history": [{"role": "user", "content": "tivi thì sao"}]}
     out = policy_node(state, {"configurable": {"db_path": db}})
-    assert "chưa kinh doanh tivi" in out["response"]
+    assert out["response"] == state["intent"]["unsupported_reply"]
     assert "xe đạp" not in out["response"].lower()
 

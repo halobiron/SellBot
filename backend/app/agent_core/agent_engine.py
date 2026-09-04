@@ -14,7 +14,8 @@ from app.agent_core.sales import (is_order_confirmation, is_aftersales_question,
                                   cross_sell_suggestion, cross_sell_line)
 from app.agent_core.presenters import product_display_name, load_specs, build_detail_card
 from app.advice.provenance import format_vnd
-from app.agent_core.addressing import DEFAULT_ADDRESS, resolve_address, resolve_self_term
+from app.agent_core.addressing import (DEFAULT_ADDRESS, apply_llm_addressing,
+                                       resolve_profile, resolve_self_term)
 from app.advice.verify import verify_advice, is_grounded
 from app.schemas import AdviceResult
 
@@ -40,6 +41,9 @@ class AgentState(TypedDict, total=False):
     next_action: str
     clarify_count: int
     customer_addr: str
+    bot_self_term: str
+    address_confidence: str
+    address_source: str
     purchase_history: List[Dict[str, Any]]
     direct_product: Optional[Dict[str, Any]]
 
@@ -49,19 +53,19 @@ def _cfg(config, key, default=None):
 
 
 def _addr(state: AgentState) -> str:
-    """Cách gọi khách cho lượt hiện tại (suy ra ở intent_node, mặc định 'anh/chị')."""
+    """Cách gọi khách cho lượt hiện tại; rỗng khi chưa có bằng chứng rõ ràng."""
     return state.get("customer_addr") or DEFAULT_ADDRESS
 
 
 def _addr_cap(state: AgentState) -> str:
     """Bản viết hoa chữ cái đầu của _addr(), dùng khi đứng đầu câu."""
     addr = _addr(state)
-    return addr[0].upper() + addr[1:]
+    return addr[0].upper() + addr[1:] if addr else ""
 
 
 def _self(state: AgentState) -> str:
     """Bot tự xưng gì cho lượt hiện tại, đối ứng với _addr() (VD gọi khách 'ông' -> xưng 'cháu')."""
-    return resolve_self_term(_addr(state))
+    return state.get("bot_self_term") or resolve_self_term(_addr(state))
 
 
 def _notify(config, text: str) -> None:
@@ -85,8 +89,9 @@ def _selected_row(state: AgentState) -> Optional[Dict[str, Any]]:
 def intent_node(state: AgentState, config) -> AgentState:
     query = state.get("query", "")
     history = list(state.get("history", []))
-    customer_addr = resolve_address(query, state.get("customer_addr"))
-    self_term = resolve_self_term(customer_addr)
+    profile = resolve_profile(state)
+    customer_addr = profile.customer_addr
+    self_term = profile.self_term
     # Model code/SKU là khoá tra cứu, không phải một "ý định" để LLM đoán. Ưu
     # tiên catalog để câu như "chi tiết Xiaomi 171303" không bị LLM suy diễn sang
     # ngành hàng hoặc tự gắn các tiêu chí không có trong câu hỏi.
@@ -95,8 +100,9 @@ def intent_node(state: AgentState, config) -> AgentState:
         history = history + [{"role": "user", "content": query}]
         log.info("intent_node: exact product identifier -> %s", product_display_name(direct_product))
         return {"intent": {"is_product_detail_question": True}, "direct_product": direct_product,
-                "history": history, "customer_addr": customer_addr}
-    _notify(config, f"{self_term.capitalize()} đang đọc yêu cầu của {customer_addr}…")
+                "history": history, "customer_addr": customer_addr, "bot_self_term": self_term,
+                "address_confidence": profile.confidence, "address_source": profile.source}
+    _notify(config, "Đang phân tích yêu cầu…")
     try:
         intent = extract_intent(query, history, _cfg(config, "llm"), _cfg(config, "db_path"),
                                 candidate_products=state.get("last_products") or [],
@@ -105,7 +111,8 @@ def intent_node(state: AgentState, config) -> AgentState:
         log.warning("intent_node: intent service unavailable")
         history = history + [{"role": "user", "content": query}]
         return {"intent": {"service_unavailable": True}, "history": history,
-                "customer_addr": customer_addr}
+                "customer_addr": customer_addr, "bot_self_term": self_term,
+                "address_confidence": profile.confidence, "address_source": profile.source}
     log.info("intent_node: query=%r -> category=%r budget_max=%s brand=%r feats=%s "
              "assumptions=%s declines=%s needs_clarification=%s meta=%s",
              query, intent.get("category"), intent.get("budget_max"), intent.get("brand"),
@@ -113,7 +120,10 @@ def intent_node(state: AgentState, config) -> AgentState:
              intent.get("declines_more_info"), intent.get("needs_clarification"),
              intent.get("is_meta_inquiry"))
     history = history + [{"role": "user", "content": query}]
-    return {"intent": intent, "history": history, "customer_addr": customer_addr}
+    profile = apply_llm_addressing(profile, intent)
+    return {"intent": intent, "history": history, "customer_addr": profile.customer_addr,
+            "bot_self_term": profile.self_term, "address_confidence": profile.confidence,
+            "address_source": profile.source}
 
 
 def _is_detail_followup(state: AgentState) -> bool:
@@ -200,7 +210,7 @@ def router_edge(state: AgentState) -> str:
 
 def unavailable_node(state: AgentState, config) -> AgentState:
     """Fail closed when the LLM-powered intent service cannot be used."""
-    text = "Dạ, dịch vụ tư vấn đang bận nên chưa thể xử lý yêu cầu của anh/chị. Anh/chị vui lòng thử lại sau ít phút ạ."
+    text = "Hiện dịch vụ tư vấn đang bận nên chưa thể xử lý yêu cầu này. Vui lòng thử lại sau ít phút."
     history = state.get("history", []) + [{"role": "assistant", "content": text}]
     return {"response": text, "stage": "unavailable", "question": None, "cards": [],
             "comparison": None, "assumptions": [], "warnings": ["intent_service_unavailable"],
@@ -211,25 +221,16 @@ def clarify_node(state: AgentState, config) -> AgentState:
     intent = state.get("intent", {})
     cat = intent.get("category")
     count = state.get("clarify_count", 0)
-    addr = _addr(state)
-    self_term = _self(state)
     # Câu hỏi do AI soạn theo bối cảnh khách kể — dùng nguyên văn; luật chỉ vá khi thiếu.
     qs = [q.strip() for q in (intent.get("clarification_questions") or []) if q.strip()][:2]
     if not cat and not qs:
         cats = get_catalog_metadata(_cfg(config, "db_path"))["categories"]
-        qs = [f"Bên {self_term} đang có: " + ", ".join(cats) + f". {_addr_cap(state)} đang cần nhóm sản phẩm nào ạ?"]
-    # Chỉ chào ở lượt trợ lý mở lời đầu tiên của phiên; các lượt sau vào thẳng câu hỏi.
-    greeted = any(m.get("role") == "assistant" for m in state.get("history", []))
-    transition = intent.get("transition_message")
-    if transition:
-        opener = transition
-    elif greeted:
-        opener = f"Dạ, {self_term} cần thêm chút thông tin để chọn đúng máy cho mình:"
-    elif cat:
-        opener = f"Chào {addr}! Để tư vấn chuẩn dòng **{cat}** theo đúng nhu cầu, {addr} chia sẻ thêm giúp {self_term}:"
-    else:
-        opener = f"Chào {addr}! Để tư vấn đúng nhu cầu, {addr} chia sẻ thêm giúp {self_term}:"
-    text = opener + "\n\n" + "\n".join(f"- {q}" for q in qs)
+        qs = ["Cửa hàng hiện có: " + ", ".join(cats) + ". Đang cần nhóm sản phẩm nào?"]
+    # Câu hỏi làm rõ do LLM viết; graph chỉ giữ cấu trúc danh sách để UI dễ đọc,
+    # không tự chèn lời chào hay đại từ mặc định.
+    transition = (intent.get("transition_message") or "").strip()
+    parts = ([transition] if transition else []) + [f"- {q}" for q in qs]
+    text = "\n\n".join(parts) if transition else "\n".join(parts)
     history = state.get("history", []) + [{"role": "assistant", "content": text}]
     return {"response": text, "question": qs[0] if qs else None, "stage": "collecting",
             "cards": [], "comparison": None, "assumptions": [], "warnings": [], "history": history,
@@ -237,8 +238,8 @@ def clarify_node(state: AgentState, config) -> AgentState:
 
 
 def _chitchat_fallback(addr: str, self_term: str) -> str:
-    return (f"Dạ, {self_term} chưa trả lời tốt câu hỏi này ạ. "
-            f"Nếu {addr} cần tư vấn sản phẩm, {self_term} hỗ trợ ngay.")
+    del addr, self_term
+    return "Mình chưa thể trả lời tốt câu hỏi này. Nếu cần tư vấn sản phẩm, hãy cho biết nhu cầu cụ thể."
 
 def chitchat_node(state: AgentState, config) -> AgentState:
     """Xã giao dùng lời AI đã được trích cùng intent."""
@@ -267,7 +268,7 @@ def policy_node(state: AgentState, config) -> AgentState:
     # intent vừa policy vừa unsupported phải luôn trả đúng thông báo unsupported.
     if state.get("intent", {}).get("unsupported_product"):
         return unsupported_node(state, config)
-    _notify(config, f"{_self(state).capitalize()} đang tra cứu chính sách cửa hàng…")
+    _notify(config, "Đang tra cứu chính sách cửa hàng…")
     query = state.get("query", "")
     # Ngữ cảnh là bắt buộc: khách hỏi "phí lắp đặt như nào" giữa cuộc tư vấn tủ lạnh
     # thì phải trả lời cho tủ lạnh, không được trút ví dụ của nhóm hàng khác.
@@ -292,7 +293,7 @@ def meta_inquiry_node(state: AgentState, config) -> AgentState:
     intent = state.get("intent", {})
     reply = (intent.get("meta_reply") or "").strip()
     if not reply:
-        reply = f"Dạ, {_addr(state)} cần {_self(state)} giải thích thêm về tiêu chí nào ạ?"
+        reply = "Cần giải thích thêm về tiêu chí nào?"
     text = reply
     log.info("meta_inquiry_node: reply=%r", text[:80])
     history = state.get("history", []) + [{"role": "assistant", "content": text}]
@@ -302,30 +303,25 @@ def meta_inquiry_node(state: AgentState, config) -> AgentState:
 
 
 def unsupported_node(state: AgentState, config) -> AgentState:
-    """Khách hỏi mặt hàng không kinh doanh: nói thật, gợi ý nhóm liên quan CÓ bán.
-    Gợi ý do AI chọn nhưng được đối chiếu với danh mục thật trước khi phát."""
+    """Phát câu trả lời do LLM soạn cùng intent cho mặt hàng ngoài catalog.
+
+    Việc đối chiếu catalog vẫn diễn ra ở intent_node; graph không ghép các mảnh
+    câu hay áp một khuôn xưng hô cho khách.
+    """
     intent = state.get("intent", {})
-    want = intent.get("unsupported_product") or "mặt hàng này"
-    cats_db = get_catalog_metadata(_cfg(config, "db_path"))["categories"]
-    rel = [c for c in (intent.get("related_categories") or []) if c in cats_db][:3]
-    log.info("unsupported_node: want=%r related(validated)=%s", want, rel)
-    addr = _addr(state)
-    self_term = _self(state)
-    if rel:
-        sugg = ", ".join(f"**{c}**" for c in rel)
-        text = (f"Dạ rất tiếc, bên {self_term} hiện **chưa kinh doanh {want}** ạ. "
-                f"Gần với nhu cầu đó, bên {self_term} có: {sugg} — {addr} muốn xem thử nhóm nào không ạ?")
-    else:
-        sugg = ", ".join(cats_db)
-        text = (f"Dạ rất tiếc, bên {self_term} hiện **chưa kinh doanh {want}** ạ. "
-                f"Bên {self_term} đang có các nhóm: {sugg}. {addr.capitalize()} quan tâm nhóm nào ạ?")
+    text = (intent.get("unsupported_reply") or "").strip()
+    if not text:
+        # The intent request is the sole authoring pass.  If it cannot provide
+        # a usable response, fail closed instead of falling back to old copy.
+        text = "Mình chưa thể soạn phản hồi cho yêu cầu này lúc này. Vui lòng thử lại sau."
+    log.info("unsupported_node: model-authored reply=%r", text[:120])
     history = state.get("history", []) + [{"role": "assistant", "content": text}]
     return {"response": text, "stage": "collecting", "question": text,
             "cards": [], "comparison": None, "assumptions": [], "warnings": [], "history": history}
 
 
 def detail_node(state: AgentState, config) -> AgentState:
-    _notify(config, f"{_self(state).capitalize()} đang tra cứu chi tiết sản phẩm…")
+    _notify(config, "Đang tra cứu chi tiết sản phẩm…")
     query = state.get("query", "")
     last = state.get("last_products", []) or []
     row = state.get("direct_product")
@@ -366,10 +362,8 @@ def confirm_purchase_node(state: AgentState, config) -> AgentState:
         row = next((r for r in last if _sku(r) == state["focused_sku"]), None)
     if row is None and last:
         row = last[0]
-    addr, self_term = _addr(state), _self(state)
     if row is None:
-        text = (f"Dạ {addr} muốn chốt máy nào ạ? {self_term.capitalize()} chưa xác định được "
-                f"sản phẩm cụ thể trong hội thoại này.")
+        text = "Chưa xác định được sản phẩm cụ thể trong hội thoại này. Muốn chốt mẫu nào?"
         history = state.get("history", []) + [{"role": "assistant", "content": text}]
         return {"response": text, "stage": "recommended", "question": None,
                 "cards": [], "comparison": None, "assumptions": [], "warnings": [], "history": history}
@@ -382,12 +376,12 @@ def confirm_purchase_node(state: AgentState, config) -> AgentState:
              "price": price, "warranty": warranty}
     purchases = [p for p in (state.get("purchase_history") or []) if p.get("sku") != entry["sku"]]
     purchases.append(entry)
-    hook = closing_hook(row.get("category"), price, addr=addr, self_term=self_term)
-    text = f"Dạ {self_term} đã ghi nhận {addr} chốt {name} (giá {price_txt}, nguồn: catalog) ạ! {hook}"
+    hook = closing_hook(row.get("category"), price)
+    text = f"Đã ghi nhận lựa chọn {name} (giá {price_txt}, nguồn: catalog). {hook}"
     cross = cross_sell_suggestion(row.get("category"), price, db_path=_cfg(config, "db_path"),
                                   exclude_sku=entry["sku"])
     if cross:
-        text = f"{text} {cross_sell_line(cross, addr=addr, self_term=self_term)}"
+        text = f"{text} {cross_sell_line(cross)}"
     card = build_detail_card(row)
     history = state.get("history", []) + [{"role": "assistant", "content": text}]
     return {"response": text, "stage": "recommended", "question": None,
@@ -398,13 +392,11 @@ def confirm_purchase_node(state: AgentState, config) -> AgentState:
 def aftersales_node(state: AgentState, config) -> AgentState:
     """Chăm sóc sau mua (2.7): trả lời bảo hành/chính sách ưu đãi TRA THEO lịch sử mua hàng
     của phiên (do confirm_purchase_node ghi nhận) — không suy diễn cho máy khách chưa chốt."""
-    _notify(config, f"{_self(state).capitalize()} đang tra cứu thông tin đơn hàng…")
-    addr, self_term = _addr(state), _self(state)
+    _notify(config, "Đang tra cứu thông tin đơn hàng…")
     purchases = state.get("purchase_history") or []
     if not purchases:
-        text = (f"Dạ {self_term} chưa thấy đơn hàng nào của {addr} trong phiên tư vấn này ạ. "
-                f"{addr.capitalize()} cho {self_term} biết tên/mã máy đã mua để tra cứu bảo hành giúp, "
-                f"hoặc gọi tổng đài 1900.232.461 (7:30 - 22:00 mỗi ngày) để được hỗ trợ trực tiếp ạ.")
+        text = ("Hiện chưa thấy đơn hàng nào trong phiên tư vấn này. Hãy cho biết tên hoặc mã máy đã mua để tra cứu "
+                "bảo hành, hoặc gọi tổng đài 1900.232.461 (7:30 - 22:00 mỗi ngày) để được hỗ trợ trực tiếp.")
         history = state.get("history", []) + [{"role": "assistant", "content": text}]
         return {"response": text, "stage": "recommended", "question": None,
                 "cards": [], "comparison": None, "assumptions": [], "warnings": [], "history": history}
@@ -412,16 +404,16 @@ def aftersales_node(state: AgentState, config) -> AgentState:
     query = state.get("query", "")
     history_msgs = (state.get("history") or [])[:-1]
     policy_reply = answer_policy(query, _cfg(config, "llm"), history=history_msgs,
-                                 category=last_purchase.get("category"), addr=addr, self_term=self_term)
+                                 category=last_purchase.get("category"))
     warranty_line = ""
     if last_purchase.get("warranty"):
-        warranty_line = (f" Riêng {last_purchase['name']} {addr} đã mua, thời hạn bảo hành ghi nhận "
+        warranty_line = (f" Riêng {last_purchase['name']}, thời hạn bảo hành ghi nhận "
                          f"từ nhà bán là {last_purchase['warranty']} (nguồn: dienmayxanh.com).")
-    text = f"Dạ về {last_purchase['name']} {addr} đã đặt:{warranty_line} {policy_reply}"
+    text = f"Thông tin về {last_purchase['name']} đã đặt:{warranty_line} {policy_reply}"
     cross = cross_sell_suggestion(last_purchase.get("category"), last_purchase.get("price") or 0,
                                   db_path=_cfg(config, "db_path"), exclude_sku=last_purchase.get("sku"))
     if cross:
-        text = f"{text} Cho lần mua kế tiếp, {cross_sell_line(cross, addr=addr, self_term=self_term)}"
+        text = f"{text} Cho lần mua kế tiếp, {cross_sell_line(cross)}"
     log.info("aftersales_node: last_purchase=%s", last_purchase.get("name"))
     history = state.get("history", []) + [{"role": "assistant", "content": text}]
     return {"response": text, "stage": "recommended", "question": None,
@@ -429,7 +421,7 @@ def aftersales_node(state: AgentState, config) -> AgentState:
 
 
 def retrieval_node(state: AgentState, config) -> AgentState:
-    _notify(config, f"{_self(state).capitalize()} đang tìm máy phù hợp trong catalog…")
+    _notify(config, "Đang tìm sản phẩm phù hợp trong catalog…")
     intent = state.get("intent", {})
     res = None
     if (intent.get("declines_more_info") and intent.get("category")
@@ -473,7 +465,7 @@ def retrieval_node(state: AgentState, config) -> AgentState:
 
 
 def advisor_node(state: AgentState, config) -> AgentState:
-    _notify(config, f"{_self(state).capitalize()} đang soạn lời tư vấn…")
+    _notify(config, "Đang soạn phản hồi…")
     intent = state.get("intent", {})
     res = state.get("retrieval", {})
     rows = res.get("top_3_products", [])

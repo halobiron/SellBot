@@ -44,11 +44,33 @@ def normalize_intent_scope(intent: Dict[str, Any], categories: List[str]) -> Dic
         out["needs_clarification"] = False
         out["is_meta_inquiry"] = False
         out["is_chitchat"] = False
+        # This is authored by the model from the verified catalog context below,
+        # rather than assembled from a fixed response template in the graph.
+        reply = out.get("unsupported_reply")
+        out["unsupported_reply"] = reply.strip() if isinstance(reply, str) and reply.strip() else None
+    else:
+        out["unsupported_reply"] = None
     return out
 
 
 # Pydantic schema mô tả ý định tìm kiếm sản phẩm.
 class IntentSchema(BaseModel):
+    customer_address: Optional[str] = Field(
+        default=None,
+        description="Cách gọi khách (ông/bà/bác/cô/chú/anh/chị/em/cháu/con) chỉ khi câu mới hoặc lịch sử có bằng chứng rõ ràng. None nếu không chắc; tuyệt đối không đoán tuổi/giới tính."
+    )
+    bot_self_term: Optional[str] = Field(
+        default=None,
+        description="Cách bot tự xưng tương ứng, chỉ điền cùng customer_address khi bằng chứng xưng hô rõ ràng. None nếu không chắc."
+    )
+    addressing_confidence: str = Field(
+        default="unknown",
+        description="high chỉ khi khách nói rõ cách muốn được gọi/xưng hoặc tự xưng rõ; unknown trong mọi trường hợp còn lại."
+    )
+    addressing_explicit: bool = Field(
+        default=False,
+        description="True chỉ khi khách nói trực tiếp cách bot và khách cần xưng hô; False khi chỉ suy ra từ ngữ cảnh."
+    )
     is_product_detail_question: bool = Field(
         default=False,
         description="True khi khách đang hỏi thêm thông tin về MỘT sản phẩm đã xuất hiện trong lịch sử, kể cả gọi là 'máy này', 'máy đầu tiên' hoặc nêu hãng/mẫu. False khi muốn xem thêm danh sách, so sánh, hay bắt đầu nhu cầu mua mới."
@@ -92,6 +114,10 @@ class IntentSchema(BaseModel):
     related_categories: List[str] = Field(
         default_factory=list,
         description="Khi unsupported_product khác None: 1-3 danh mục CÓ TRONG CSDL gần nhất với nhu cầu đó (VD điện thoại -> Máy tính bảng, Đồng hồ thông minh)."
+    )
+    unsupported_reply: Optional[str] = Field(
+        default=None,
+        description="Khi unsupported_product khác None: câu trả lời tự nhiên 1-2 câu cho khách. Nói rõ cửa hàng hiện không có mặt hàng đó và chỉ gợi ý related_categories có trong CSDL nếu thực sự liên quan. Không dùng lời văn mẫu, không tự gán tuổi/giới tính hay cách xưng hô; nếu chưa chắc thì tránh gọi trực tiếp khách."
     )
     budget_max: Optional[float] = Field(
         default=None,
@@ -137,10 +163,10 @@ class IntentServiceUnavailableError(RuntimeError):
 
 
 _SCHEMA_HINT = (
-    '{"is_product_detail_question": bool, "selected_product_id": string|null, "is_meta_inquiry": bool, "meta_reply": string|null, "is_policy_question": bool, '
+    '{"customer_address": string|null, "bot_self_term": string|null, "addressing_confidence": "high"|"unknown", "addressing_explicit": bool, "is_product_detail_question": bool, "selected_product_id": string|null, "is_meta_inquiry": bool, "meta_reply": string|null, "is_policy_question": bool, '
     '"is_chitchat": bool, "smalltalk_reply": string|null, '
     '"category": string|null, "transition_message": string|null, "unsupported_product": string|null, '
-    '"related_categories": string[], "budget_max": number|null, '
+    '"related_categories": string[], "unsupported_reply": string|null, "budget_max": number|null, '
     '"brand": string|null, "priority_features": string[], "wants_comparison": bool, "assumptions": string[], '
     '"declines_more_info": bool, "needs_custom_query": bool, "needs_clarification": bool, '
     '"clarification_questions": string[]}'
@@ -149,8 +175,8 @@ _SCHEMA_HINT = (
 
 def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
                    llm=None, db_path: Optional[str] = None,
-                   candidate_products: Optional[List[Dict[str, Any]]] = None, addr: str = "anh/chị",
-                   self_term: str = "em") -> Dict[str, Any]:
+                   candidate_products: Optional[List[Dict[str, Any]]] = None, addr: str = "",
+                   self_term: str = "") -> Dict[str, Any]:
     """Trích ý định qua DeepSeek; không suy đoán intent khi dịch vụ lỗi."""
     if llm is None:
         log.error("intent: không có LLM được cấu hình")
@@ -162,7 +188,10 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
             f"{schema_info}\n"
             "- category phải là đúng danh mục CSDL, suy luận theo ngữ nghĩa; nhu cầu mới thắng lịch sử. "
             "Nếu mô tả vấn đề, tự chọn danh mục CSDL giải quyết được và viết transition_message. Nếu không "
-            "có sản phẩm thay thế, category=null, điền unsupported_product và 1-3 related_categories có thật.\n"
+            "có sản phẩm thay thế, category=null, điền unsupported_product và 1-3 related_categories có thật. "
+            "Khi unsupported_product có giá trị, BẮT BUỘC điền unsupported_reply: viết một câu trả lời tự nhiên "
+            "theo đúng ngữ cảnh, nói thật là cửa hàng chưa có mặt hàng này và chỉ nhắc related_categories nếu hợp lý. "
+            "Không được dùng một khuôn câu cố định hay lặp nguyên cụm 'Gần với nhu cầu đó'.\n"
             "- budget_max là VNĐ tuyệt đối: '5 củ', '5tr', '5 triệu' đều là 5000000; '5,5 triệu' là 5500000.\n"
             "- Detail chỉ là câu hỏi tiếp về một candidate lịch sử. Câu hỏi khái niệm/thông số/catalog là meta "
             "và có meta_reply ngắn; chính sách cửa hàng/dữ liệu cá nhân là policy; xã giao, kiến thức ngoài "
@@ -171,7 +200,13 @@ def extract_intent(query: str, history: Optional[List[Dict[str, str]]] = None,
             "- Trích brand, ngân sách, ưu tiên; needs_custom_query=true cho ràng buộc thông số/xếp hạng, "
             "kể cả số người dùng. wants_comparison=true khi khách muốn nhiều lựa chọn. Chỉ needs_clarification "
             "khi thiếu dữ kiện thật sự, hỏi 1-2 câu ngắn không lặp lại lịch sử; declines_more_info=true khi khách từ chối.\n"
-            f"- Trong mọi câu trả lời hướng khách, xưng '{self_term}' và gọi khách là '{addr}' (không dùng 'bạn')."
+            "- Đồng thời trích customer_address, bot_self_term và addressing_confidence. Chỉ trả high khi khách tự "
+            "xưng rõ ở ngôi thứ nhất (vd 'cô cần...', 'anh muốn...', 'ông cần...') hoặc nói thẳng cách muốn được gọi/xưng. "
+            "Không suy tuổi, giới tính hay vai vế từ tên, sản phẩm, giọng văn, 'tôi/mình', hay khi khách gọi BOT "
+            "(vd 'dạ cô ơi'). addressing_explicit=true chỉ khi khách yêu cầu trực tiếp cách xưng hô. Nếu không "
+            "chắc, để hai trường null và confidence=unknown.\n"
+            "- Giữ cách xưng hô mà khách đã nói rõ. Khi chưa có bằng chứng, không tự gán tuổi, giới tính hay "
+            "vai vế; ưu tiên câu không cần gọi trực tiếp khách thay vì ép dùng một đại từ mặc định."
         )
         candidate_lines = []
         for row in candidate_products or []:
